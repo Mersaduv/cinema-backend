@@ -15,7 +15,14 @@ class MediaAsset extends Model
         'managed_relative_directory',
         'hls_output_relative_directory',
         'master_playlist_relative_path',
+        'selected_hls_profiles',
+        'stop_requested',
+        'processing_pid',
         'processing_status',
+        'processing_progress_percent',
+        'processing_eta_seconds',
+        'current_profile_key',
+        'processing_started_at',
         'processing_error',
         'last_processed_at',
     ];
@@ -24,6 +31,12 @@ class MediaAsset extends Model
     {
         return [
             'source_is_external' => 'boolean',
+            'selected_hls_profiles' => 'array',
+            'stop_requested' => 'boolean',
+            'processing_pid' => 'integer',
+            'processing_progress_percent' => 'decimal:2',
+            'processing_eta_seconds' => 'integer',
+            'processing_started_at' => 'datetime',
             'last_processed_at' => 'datetime',
         ];
     }

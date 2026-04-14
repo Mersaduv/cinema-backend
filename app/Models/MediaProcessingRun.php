@@ -11,6 +11,10 @@ class MediaProcessingRun extends Model
         'media_asset_id',
         'created_by',
         'status',
+        'progress_percent',
+        'eta_seconds',
+        'current_profile_key',
+        'source_duration_seconds',
         'ffmpeg_command',
         'logs',
         'error_message',
@@ -21,6 +25,9 @@ class MediaProcessingRun extends Model
     protected function casts(): array
     {
         return [
+            'progress_percent' => 'decimal:2',
+            'eta_seconds' => 'integer',
+            'source_duration_seconds' => 'integer',
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
         ];

@@ -1,7 +1,9 @@
 <?php
 
 use App\Http\Controllers\AdminMovieController;
+use App\Http\Controllers\AdminMediaBrowserController;
 use App\Http\Controllers\AdminUserController;
+use App\Http\Controllers\AdminTaxonomyController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\PublicMovieController;
 use Illuminate\Http\Request;
@@ -50,9 +52,22 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::get('/users/options', [AdminUserController::class, 'options']);
     Route::post('/users', [AdminUserController::class, 'store']);
 
+    Route::get('/media-browser/roots', [AdminMediaBrowserController::class, 'roots']);
+    Route::get('/media-browser/entries', [AdminMediaBrowserController::class, 'entries']);
+
     Route::get('/movies', [AdminMovieController::class, 'index']);
     Route::get('/movies/options', [AdminMovieController::class, 'options']);
     Route::post('/movies', [AdminMovieController::class, 'store']);
     Route::get('/movies/{movie}', [AdminMovieController::class, 'show']);
     Route::post('/movies/{movie}/process', [AdminMovieController::class, 'queueProcessing']);
+    Route::post('/movies/{movie}/stop-processing', [AdminMovieController::class, 'stopProcessing']);
+    Route::match(['put', 'patch'], '/movies/{movie}/draft-form', [AdminMovieController::class, 'updateDraftForm']);
+    Route::match(['put', 'patch'], '/movies/{movie}/publication-form', [AdminMovieController::class, 'updatePublicationForm']);
+    Route::match(['put', 'patch'], '/movies/{movie}/publish-status', [AdminMovieController::class, 'updatePublishStatus']);
+    Route::delete('/movies/{movie}', [AdminMovieController::class, 'destroy']);
+
+    Route::get('/taxonomies/{type}', [AdminTaxonomyController::class, 'index']);
+    Route::post('/taxonomies/{type}', [AdminTaxonomyController::class, 'store']);
+    Route::match(['put', 'patch'], '/taxonomies/{type}/{id}', [AdminTaxonomyController::class, 'update']);
+    Route::delete('/taxonomies/{type}/{id}', [AdminTaxonomyController::class, 'destroy']);
 });

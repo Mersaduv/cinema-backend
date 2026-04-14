@@ -26,6 +26,13 @@ class ProcessMovieMediaAssetJob implements ShouldQueue
             return;
         }
 
+        if (
+            $mediaAsset->stop_requested ||
+            !in_array($mediaAsset->processing_status, ['queued', 'processing'], true)
+        ) {
+            return;
+        }
+
         $transcodingService->process($mediaAsset, $this->actorId);
     }
 }
