@@ -2,22 +2,29 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Country;
-use App\Models\Genre;
-use App\Models\Language;
-use App\Models\Actor;
-use App\Jobs\ProcessMovieMediaAssetJob;
-use App\Models\MediaAsset;
+use App\Jobs\SyncMoviePersonCreditsJob;
+use App\Jobs\ValidateHlsManifestJob;
 use App\Models\Movie;
-use App\Models\Tag;
+use App\Models\MovieCast;
+use App\Models\MovieCrew;
+use App\Services\Cinema\AdminCatalogSummaryService;
+use App\Services\Cinema\AdminReferenceOptionsService;
+use App\Services\Cinema\CatalogCacheService;
+use App\Services\Cinema\CatalogListProcedureService;
+use App\Services\Cinema\GenreCatalogService;
+use App\Support\CatalogListResponseMapper;
 use App\Services\Cinema\MediaPathService;
 use App\Services\Cinema\MovieCleanupService;
 use App\Services\Cinema\MovieDraftUpdateService;
 use App\Services\Cinema\MovieIngestionService;
-use App\Services\Cinema\HlsTranscodingService;
+use App\Services\Cinema\PublishScheduleService;
+use App\Services\Cinema\HlsPackageInsightService;
+use App\Services\TmdbService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 
@@ -28,58 +35,81 @@ class AdminMovieController extends Controller
         private readonly MovieCleanupService $movieCleanupService,
         private readonly MediaPathService $mediaPathService,
         private readonly MovieDraftUpdateService $movieDraftUpdateService,
-        private readonly HlsTranscodingService $hlsTranscodingService,
+        private readonly HlsPackageInsightService $hlsPackageInsightService,
+        private readonly TmdbService $tmdbService,
+        private readonly GenreCatalogService $genreCatalogService,
+        private readonly AdminReferenceOptionsService $adminReferenceOptionsService,
+        private readonly AdminCatalogSummaryService $adminCatalogSummaryService,
+        private readonly CatalogListProcedureService $catalogListProcedureService,
+        private readonly CatalogListResponseMapper $catalogListResponseMapper,
+        private readonly CatalogCacheService $catalogCacheService,
     ) {
     }
 
     public function index(Request $request): JsonResponse
     {
+        $page = max(1, (int) $request->integer('page', 1));
         $search = trim((string) $request->string('search'));
         $publishStatus = (string) $request->string('publish_status');
         $processingStatus = (string) $request->string('processing_status');
         $perPage = min(max((int) $request->integer('per_page', 12), 1), 50);
 
-        $query = Movie::query()
-            ->with(['mediaAsset.variants', 'creator', 'genres', 'countries', 'languages', 'tags', 'actors'])
-            ->when($search !== '', function ($query) use ($search) {
-                $query->where(function ($innerQuery) use ($search) {
-                    $innerQuery
-                        ->where('title', 'like', "%{$search}%")
-                        ->orWhere('original_title', 'like', "%{$search}%")
-                        ->orWhere('slug', 'like', "%{$search}%");
-                });
-            })
-            ->when(in_array($publishStatus, ['draft', 'scheduled', 'published'], true), function ($query) use ($publishStatus) {
-                $query->where('publish_status', $publishStatus);
-            })
-            ->when(in_array($processingStatus, ['pending', 'queued', 'processing', 'ready', 'failed'], true), function ($query) use ($processingStatus) {
-                $query->where('processing_status', $processingStatus);
-            })
-            ->latest();
+        $searchParam = $search !== '' ? $search : null;
+        $publishFilter = in_array($publishStatus, ['draft', 'scheduled', 'published'], true)
+            ? $publishStatus
+            : null;
+        $processingFilter = in_array($processingStatus, ['pending', 'queued', 'processing', 'ready', 'failed'], true)
+            ? $processingStatus
+            : null;
 
-        $movies = $query->paginate($perPage);
+        $cacheKey = $this->catalogCacheService->listCacheKey(
+            'admin_movies_list',
+            md5(serialize([
+                $page,
+                $perPage,
+                $searchParam,
+                $publishFilter,
+                $processingFilter,
+            ])),
+        );
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'movies' => collect($movies->items())
-                    ->map(fn (Movie $movie) => $this->transformMovie($movie))
-                    ->values(),
-                'summary' => [
-                    'total' => Movie::count(),
-                    'drafts' => Movie::where('publish_status', 'draft')->count(),
-                    'published' => Movie::where('publish_status', 'published')->count(),
-                    'processing' => Movie::whereIn('processing_status', ['queued', 'processing'])->count(),
-                    'ready' => Movie::where('processing_status', 'ready')->count(),
-                ],
+        $data = Cache::remember($cacheKey, 60, function () use (
+            $searchParam,
+            $publishFilter,
+            $processingFilter,
+            $page,
+            $perPage,
+        ): array {
+            $result = $this->catalogListProcedureService->adminMoviesList(
+                $searchParam,
+                $publishFilter,
+                $processingFilter,
+                $page,
+                $perPage,
+            );
+
+            $movies = array_map(
+                fn (array $row) => $this->catalogListResponseMapper->adminMovieListItem($row),
+                $result['rows'],
+            );
+
+            $lastPage = max(1, (int) ceil($result['total'] / $perPage));
+
+            return [
+                'movies' => $movies,
+                'summary' => $result['summary'],
                 'pagination' => [
-                    'current_page' => $movies->currentPage(),
-                    'last_page' => $movies->lastPage(),
-                    'per_page' => $movies->perPage(),
-                    'total' => $movies->total(),
+                    'current_page' => $page,
+                    'last_page' => $lastPage,
+                    'per_page' => $perPage,
+                    'total' => $result['total'],
                 ],
-            ],
-        ]);
+            ];
+        });
+
+        return response()
+            ->json(['success' => true, 'data' => $data])
+            ->header('Cache-Control', 'no-store, private');
     }
 
     public function options(): JsonResponse
@@ -88,34 +118,18 @@ class AdminMovieController extends Controller
             'success' => true,
             'data' => [
                 'publish_statuses' => [
-                    ['value' => 'draft', 'label' => 'پیش نویس'],
-                    ['value' => 'scheduled', 'label' => 'زمان بندی شده'],
-                    ['value' => 'published', 'label' => 'منتشر شده'],
+                    ['value' => 'draft', 'label' => 'Draft'],
+                    ['value' => 'scheduled', 'label' => 'Scheduled'],
+                    ['value' => 'published', 'label' => 'Published'],
                 ],
                 'processing_statuses' => [
-                    ['value' => 'pending', 'label' => 'در انتظار'],
-                    ['value' => 'queued', 'label' => 'در صف'],
-                    ['value' => 'processing', 'label' => 'در حال پردازش'],
-                    ['value' => 'ready', 'label' => 'آماده پخش'],
-                    ['value' => 'failed', 'label' => 'خطا'],
+                    ['value' => 'pending', 'label' => 'Pending'],
+                    ['value' => 'queued', 'label' => 'Queued'],
+                    ['value' => 'processing', 'label' => 'Processing'],
+                    ['value' => 'ready', 'label' => 'Ready'],
+                    ['value' => 'failed', 'label' => 'Failed'],
                 ],
-                'hls_profiles' => collect((array) config('cinema.hls_profiles', []))
-                    ->map(function (array $profile, string $key) {
-                        return [
-                            'key' => $key,
-                            'label' => strtoupper($key),
-                            'resolution' => "{$profile['width']}x{$profile['height']}",
-                            'bandwidth' => $profile['bandwidth'],
-                        ];
-                    })
-                    ->values(),
-                'taxonomies' => [
-                    'genres' => $this->taxonomyOptions(Genre::class),
-                    'countries' => $this->taxonomyOptions(Country::class),
-                    'languages' => $this->taxonomyOptions(Language::class),
-                    'tags' => $this->taxonomyOptions(Tag::class),
-                    'actors' => $this->taxonomyOptions(Actor::class),
-                ],
+                'hls_profiles' => [],
                 'media_root' => $this->mediaPathService->mediaRoot(),
                 'upload_limits' => [
                     'upload_max_filesize' => ini_get('upload_max_filesize') ?: null,
@@ -123,6 +137,9 @@ class AdminMovieController extends Controller
                     'max_execution_time' => ini_get('max_execution_time') ?: null,
                     'max_input_time' => ini_get('max_input_time') ?: null,
                 ],
+                'genres' => $this->adminReferenceOptionsService->genres(),
+                'countries' => $this->adminReferenceOptionsService->countries(),
+                'languages' => $this->adminReferenceOptionsService->languages(),
             ],
         ]);
     }
@@ -138,13 +155,13 @@ class AdminMovieController extends Controller
             'provider_name' => ['nullable', 'string', 'max:255'],
             'poster_path' => ['nullable', 'string', 'max:2048'],
             'poster_file' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp,gif'],
-            'source_path' => ['nullable', 'string', 'max:2048', 'required_without:source_file'],
-            'source_file' => ['nullable', 'file', 'mimes:mp4,mkv,mov,avi,m4v,ts', 'required_without:source_path'],
+            'source_path' => ['nullable', 'string', 'max:2048'],
+            'source_file' => ['nullable', 'file', 'mimes:mp4,mkv,mov,avi,m4v,ts'],
             'publish_status' => ['nullable', Rule::in(['draft', 'scheduled', 'published'])],
-            'scheduled_for' => ['nullable', 'date'],
+            'scheduled_for' => ['nullable', 'string', 'max:32'],
             'start_processing' => ['nullable', 'boolean'],
             'selected_hls_profiles' => ['nullable', 'array'],
-            'selected_hls_profiles.*' => ['string', Rule::in(array_keys((array) config('cinema.hls_profiles', [])))],
+            'selected_hls_profiles.*' => ['string'],
             'has_dubbed_audio' => ['nullable', 'boolean'],
             'dubbed_source_path' => ['nullable', 'string', 'max:2048'],
             'audio_tracks' => ['nullable', 'array'],
@@ -153,16 +170,6 @@ class AdminMovieController extends Controller
             'audio_tracks.*.source_path' => ['required_with:audio_tracks.*.label', 'string', 'max:2048'],
             'has_subtitle' => ['nullable', 'boolean'],
             'subtitle_source_path' => ['nullable', 'string', 'max:2048'],
-            'genre_ids' => ['nullable', 'array'],
-            'genre_ids.*' => ['integer', Rule::exists('genres', 'id')],
-            'country_ids' => ['nullable', 'array'],
-            'country_ids.*' => ['integer', Rule::exists('countries', 'id')],
-            'language_ids' => ['nullable', 'array'],
-            'language_ids.*' => ['integer', Rule::exists('languages', 'id')],
-            'tag_ids' => ['nullable', 'array'],
-            'tag_ids.*' => ['integer', Rule::exists('tags', 'id')],
-            'actor_ids' => ['nullable', 'array'],
-            'actor_ids.*' => ['integer', Rule::exists('actors', 'id')],
         ]);
 
         if ($validator->fails()) {
@@ -181,7 +188,7 @@ class AdminMovieController extends Controller
                 'success' => false,
                 'message' => 'Scheduled movies require a schedule date.',
                 'errors' => [
-                    'scheduled_for' => ['برای محتوای زمان بندی شده باید تاریخ انتشار تعیین شود.'],
+                    'scheduled_for' => ['A schedule date is required for scheduled movies.'],
                 ],
             ], 422);
         }
@@ -203,150 +210,24 @@ class AdminMovieController extends Controller
             ], 422);
         }
 
-        if ((bool) $request->boolean('start_processing') && $movie->mediaAsset) {
-            $movie->update(['processing_status' => 'queued']);
-            $movie->mediaAsset->update(['processing_status' => 'queued']);
-
-            ProcessMovieMediaAssetJob::dispatch($movie->mediaAsset->id, $request->user()->id);
-        }
+        $this->invalidateAdminMoviesListCache();
 
         return response()->json([
             'success' => true,
             'message' => 'Movie registered successfully.',
             'data' => [
-                'movie' => $this->transformMovie($movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator', 'genres', 'countries', 'languages', 'tags', 'actors'])),
+                'movie' => $this->transformMovie($movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator'])),
             ],
         ], 201);
     }
 
-    public function updatePublicationForm(Request $request, Movie $movie): JsonResponse
-    {
-        $validated = Validator::make($request->all(), [
-            'title' => ['required', 'string', 'max:255'],
-            'poster_path' => ['nullable', 'string', 'max:2048'],
-            'trailer_path' => ['nullable', 'string', 'max:2048'],
-            'has_dubbed_audio' => ['nullable', 'boolean'],
-            'dubbed_source_path' => ['nullable', 'string', 'max:2048'],
-            'audio_tracks' => ['nullable', 'array'],
-            'audio_tracks.*.label' => ['required_with:audio_tracks.*.source_path', 'string', 'max:120'],
-            'audio_tracks.*.language' => ['nullable', 'string', 'max:12'],
-            'audio_tracks.*.source_path' => ['required_with:audio_tracks.*.label', 'string', 'max:2048'],
-            'has_subtitle' => ['nullable', 'boolean'],
-            'subtitle_source_path' => ['nullable', 'string', 'max:2048'],
-            'synopsis' => ['nullable', 'string'],
-            'age_rating' => ['nullable', 'string', 'max:50'],
-            'genre_ids' => ['nullable', 'array'],
-            'genre_ids.*' => ['integer', Rule::exists('genres', 'id')],
-            'country_ids' => ['nullable', 'array'],
-            'country_ids.*' => ['integer', Rule::exists('countries', 'id')],
-            'language_ids' => ['nullable', 'array'],
-            'language_ids.*' => ['integer', Rule::exists('languages', 'id')],
-            'tag_ids' => ['nullable', 'array'],
-            'tag_ids.*' => ['integer', Rule::exists('tags', 'id')],
-            'actor_ids' => ['nullable', 'array'],
-            'actor_ids.*' => ['integer', Rule::exists('actors', 'id')],
-        ])->validate();
-
-        try {
-            $posterPath = filled($validated['poster_path'] ?? null)
-                ? $this->mediaPathService->storeMoviePoster((string) $validated['poster_path'], $movie->slug)
-                : null;
-            $trailerPath = filled($validated['trailer_path'] ?? null)
-                ? $this->mediaPathService->storeMovieTrailer((string) $validated['trailer_path'], $movie->slug)
-                : null;
-            $dubbedSourcePath = filled($validated['dubbed_source_path'] ?? null)
-                ? $this->mediaPathService->storeMovieDubbedSource((string) $validated['dubbed_source_path'], $movie->slug)
-                : null;
-            $audioTracks = collect($validated['audio_tracks'] ?? [])
-                ->filter(fn (array $track) => filled($track['source_path'] ?? null))
-                ->values()
-                ->map(function (array $track, int $index) use ($movie) {
-                    return [
-                        'label' => trim((string) ($track['label'] ?? ('صوت ' . ($index + 2)))),
-                        'language' => trim((string) ($track['language'] ?? 'und')) ?: 'und',
-                        'source_path' => $this->mediaPathService->storeManagedMovieFile(
-                            (string) $track['source_path'],
-                            $movie->slug,
-                            'audio',
-                            'track-' . ($index + 2)
-                        ),
-                    ];
-                })
-                ->all();
-            $subtitleSourcePath = filled($validated['subtitle_source_path'] ?? null)
-                ? $this->mediaPathService->storeMovieSubtitle((string) $validated['subtitle_source_path'], $movie->slug)
-                : null;
-        } catch (InvalidArgumentException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => $exception->getMessage(),
-                'errors' => [
-                    'media' => [$exception->getMessage()],
-                ],
-            ], 422);
-        }
-
-        $shouldSyncSupplementalTracks =
-            $movie->dubbed_source_path !== ((bool) ($validated['has_dubbed_audio'] ?? false) ? $dubbedSourcePath : null)
-            || $movie->has_dubbed_audio !== (bool) ($validated['has_dubbed_audio'] ?? false)
-            || $movie->subtitle_source_path !== ((bool) ($validated['has_subtitle'] ?? false) ? $subtitleSourcePath : null)
-            || $movie->has_subtitle !== (bool) ($validated['has_subtitle'] ?? false)
-            || json_encode($movie->audio_tracks ?? []) !== json_encode($audioTracks);
-
-        $movie->update([
-            'title' => $validated['title'],
-            'poster_path' => $posterPath,
-            'trailer_path' => $trailerPath,
-            'has_dubbed_audio' => (bool) ($validated['has_dubbed_audio'] ?? false),
-            'dubbed_source_path' => (bool) ($validated['has_dubbed_audio'] ?? false) ? $dubbedSourcePath : null,
-            'audio_tracks' => $audioTracks,
-            'has_subtitle' => (bool) ($validated['has_subtitle'] ?? false),
-            'subtitle_source_path' => (bool) ($validated['has_subtitle'] ?? false) ? $subtitleSourcePath : null,
-            'synopsis' => $validated['synopsis'] ?? null,
-            'age_rating' => $validated['age_rating'] ?? null,
-            'cast_members' => Actor::query()
-                ->whereIn('id', $validated['actor_ids'] ?? [])
-                ->orderBy('name')
-                ->pluck('name')
-                ->values()
-                ->all(),
-        ]);
-
-        $movie->genres()->sync($validated['genre_ids'] ?? []);
-        $movie->countries()->sync($validated['country_ids'] ?? []);
-        $movie->languages()->sync($validated['language_ids'] ?? []);
-        $movie->tags()->sync($validated['tag_ids'] ?? []);
-        $movie->actors()->sync($validated['actor_ids'] ?? []);
-
-        if ($shouldSyncSupplementalTracks && $movie->mediaAsset && $movie->mediaAsset->processing_status === 'ready') {
-            try {
-                $this->hlsTranscodingService->syncSupplementalTracks($movie->mediaAsset->fresh(['variants', 'mediable']));
-            } catch (\Throwable $exception) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'اطلاعات ذخیره شد اما هماهنگ‌سازی دوبله/زیرنویس با پلیر انجام نشد: ' . $exception->getMessage(),
-                    'errors' => [
-                        'media' => [$exception->getMessage()],
-                    ],
-                ], 422);
-            }
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Publication form saved successfully.',
-            'data' => [
-                'movie' => $this->transformMovie(
-                    $movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator', 'genres', 'countries', 'languages', 'tags', 'actors']),
-                    true
-                ),
-            ],
-        ]);
-    }
-
     public function show(Movie $movie): JsonResponse
     {
-        $movie->load(['mediaAsset.variants', 'mediaAsset.processingRuns.creator', 'creator', 'genres', 'countries', 'languages', 'tags', 'actors']);
+        $movie->load([
+            'mediaAsset.variants',
+            'mediaAsset.processingRuns.creator',
+            'creator',
+        ]);
 
         return response()->json([
             'success' => true,
@@ -354,6 +235,14 @@ class AdminMovieController extends Controller
                 'movie' => $this->transformMovie($movie, true),
             ],
         ]);
+    }
+
+    public function queueProcessing(Request $request, Movie $movie): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'Internal HLS processing has been removed from this project.',
+        ], 410);
     }
 
     public function updateDraftForm(Request $request, Movie $movie): JsonResponse
@@ -364,9 +253,9 @@ class AdminMovieController extends Controller
             'slug' => ['required', 'string', 'max:255', Rule::unique('movies', 'slug')->ignore($movie->id)],
             'release_year' => ['nullable', 'integer', 'between:1888,2100'],
             'provider_name' => ['nullable', 'string', 'max:255'],
-            'source_path' => ['required', 'string', 'max:2048'],
+            'source_path' => ['nullable', 'string', 'max:2048'],
             'selected_hls_profiles' => ['nullable', 'array'],
-            'selected_hls_profiles.*' => ['string', Rule::in(array_keys((array) config('cinema.hls_profiles', [])))],
+            'selected_hls_profiles.*' => ['string'],
             'poster_path' => ['nullable', 'string', 'max:2048'],
             'trailer_path' => ['nullable', 'string', 'max:2048'],
             'has_dubbed_audio' => ['nullable', 'boolean'],
@@ -379,16 +268,6 @@ class AdminMovieController extends Controller
             'subtitle_source_path' => ['nullable', 'string', 'max:2048'],
             'synopsis' => ['nullable', 'string'],
             'age_rating' => ['nullable', 'string', 'max:50'],
-            'genre_ids' => ['nullable', 'array'],
-            'genre_ids.*' => ['integer', Rule::exists('genres', 'id')],
-            'country_ids' => ['nullable', 'array'],
-            'country_ids.*' => ['integer', Rule::exists('countries', 'id')],
-            'language_ids' => ['nullable', 'array'],
-            'language_ids.*' => ['integer', Rule::exists('languages', 'id')],
-            'tag_ids' => ['nullable', 'array'],
-            'tag_ids.*' => ['integer', Rule::exists('tags', 'id')],
-            'actor_ids' => ['nullable', 'array'],
-            'actor_ids.*' => ['integer', Rule::exists('actors', 'id')],
         ])->validate();
 
         try {
@@ -398,88 +277,526 @@ class AdminMovieController extends Controller
                 'success' => false,
                 'message' => $exception->getMessage(),
                 'errors' => [
-                    'movie' => [$exception->getMessage()],
+                    'draft' => [$exception->getMessage()],
                 ],
             ], 422);
         }
 
+        $this->invalidateAdminMoviesListCache();
+
         return response()->json([
             'success' => true,
-            'message' => 'Draft movie updated successfully.',
+            'message' => 'Draft form saved successfully.',
             'data' => [
                 'movie' => $this->transformMovie($updatedMovie, true),
             ],
         ]);
     }
 
-    public function queueProcessing(Request $request, Movie $movie): JsonResponse
+    public function updatePublicationForm(Request $request, Movie $movie): JsonResponse
     {
-        $movie->load('mediaAsset');
+        $payload = $request->all();
 
-        if (!$movie->mediaAsset instanceof MediaAsset) {
-            return response()->json([
-                'success' => false,
-                'message' => 'No media asset is registered for this movie.',
-            ], 404);
+        if (isset($payload['download_links']) && is_array($payload['download_links'])) {
+            $payload['download_links'] = collect($payload['download_links'])
+                ->mapWithKeys(function ($url, $key) {
+                    $normalizedKey = trim((string) $key);
+
+                    return [$normalizedKey => is_string($url) ? trim($url) : $url];
+                })
+                ->filter(fn ($url, $key) => $key !== '' && filled($url))
+                ->all();
         }
 
-        $validated = Validator::make($request->all(), [
-            'selected_hls_profiles' => ['nullable', 'array'],
-            'selected_hls_profiles.*' => ['string', Rule::in(array_keys((array) config('cinema.hls_profiles', [])))],
+        $validated = Validator::make($payload, [
+            'title' => ['required', 'string', 'max:255'],
+            'slug' => ['required', 'string', 'max:255', Rule::unique('movies', 'slug')->ignore($movie->id)],
+            'original_title' => ['nullable', 'string', 'max:255'],
+            'poster_path' => ['nullable', 'string', 'max:2048'],
+            'poster_url' => ['nullable', 'url', 'max:2048'],
+            'trailer_path' => ['nullable', 'string', 'max:2048'],
+            'trailer_url' => ['nullable', 'url', 'max:2048'],
+            'backdrop_url' => ['nullable', 'url', 'max:2048'],
+            'synopsis' => ['nullable', 'string'],
+            'age_rating' => ['nullable', 'string', 'max:50'],
+            'release_year' => ['nullable', 'integer', 'between:1888,2100'],
+            'tmdb_id' => ['nullable', 'integer', 'min:1'],
+            'imdb_id' => ['nullable', 'string', 'max:32'],
+            'tmdb_query' => ['nullable', 'string', 'max:255'],
+            'rating' => ['nullable', 'numeric', 'between:0,10'],
+            'original_language' => ['nullable', 'string', 'max:12'],
+            'runtime_minutes' => ['nullable', 'integer', 'min:1', 'max:999'],
+            'directors' => ['nullable', 'array'],
+            'directors.*' => ['string', 'max:255'],
+            'writers' => ['nullable', 'array'],
+            'writers.*' => ['string', 'max:255'],
+            'production_status' => ['nullable', 'string', 'max:120'],
+            'provider_name' => ['nullable', 'string', 'max:255'],
+            'budget' => ['nullable', 'integer', 'min:0'],
+            'revenue' => ['nullable', 'integer', 'min:0'],
+            'genres' => ['nullable', 'array'],
+            'genres.*' => ['string', 'max:120'],
+            'tags' => ['nullable', 'array'],
+            'tags.*' => ['string', 'max:120'],
+            'languages' => ['nullable', 'array'],
+            'languages.*' => ['string', 'max:120'],
+            'countries' => ['nullable', 'array'],
+            'countries.*' => ['string', 'max:120'],
+            'actors' => ['nullable', 'array'],
+            'actors.*.name' => ['required_with:actors', 'string', 'max:255'],
+            'actors.*.character' => ['nullable', 'string', 'max:255'],
+            'actors.*.profile_url' => ['nullable', 'url', 'max:2048'],
+            'hls_url' => ['nullable', 'string', 'max:2048'],
+            'download_links' => ['nullable', 'array'],
+            'download_links.*' => ['nullable', 'string', 'max:2048'],
+            'subtitle_source_path' => ['nullable', 'url', 'max:2048'],
+            'cast_members' => ['nullable', 'array'],
+            'cast_members.*' => ['string', 'max:255'],
+            'cast' => ['nullable', 'array'],
+            'cast.*.tmdb_person_id' => ['nullable', 'integer', 'min:0'],
+            'cast.*.name' => ['nullable', 'string', 'max:255'],
+            'cast.*.character' => ['nullable', 'string', 'max:500'],
+            'cast.*.profile_url' => ['nullable', 'string', 'max:2048'],
+            'cast.*.credit_id' => ['nullable', 'string', 'max:100'],
+            'cast.*.order' => ['nullable', 'integer', 'min:0'],
+            'cast.*.known_for_department' => ['nullable', 'string', 'max:100'],
+            'crew' => ['nullable', 'array'],
+            'crew.*.tmdb_person_id' => ['nullable', 'integer', 'min:0'],
+            'crew.*.name' => ['nullable', 'string', 'max:255'],
+            'crew.*.job' => ['nullable', 'string', 'max:255'],
+            'crew.*.department' => ['nullable', 'string', 'max:255'],
+            'crew.*.profile_url' => ['nullable', 'string', 'max:2048'],
+            'crew.*.credit_id' => ['nullable', 'string', 'max:100'],
         ])->validate();
 
-        $this->hlsTranscodingService->clearQueuedJobs($movie->mediaAsset);
+        try {
+            $storageSlug = $movie->slug ?: $validated['slug'];
+            $posterPath = filled($validated['poster_path'] ?? null)
+                ? $this->mediaPathService->storeMoviePoster((string) $validated['poster_path'], $storageSlug)
+                : $movie->poster_path;
+            $trailerPath = filled($validated['trailer_path'] ?? null)
+                ? $this->mediaPathService->storeMovieTrailer((string) $validated['trailer_path'], $storageSlug)
+                : $movie->trailer_path;
+        } catch (InvalidArgumentException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => $exception->getMessage(),
+                'errors' => [
+                    'media' => [$exception->getMessage()],
+                ],
+            ], 422);
+        }
 
+        $subtitleSourcePath = filled($validated['subtitle_source_path'] ?? null)
+            ? trim((string) $validated['subtitle_source_path'])
+            : null;
+
+        $existingMetadata = is_array($movie->metadata) ? $movie->metadata : [];
+        $downloadLinks = collect($validated['download_links'] ?? [])
+            ->mapWithKeys(fn ($value, $key) => [trim((string) $key) => $value])
+            ->filter(fn ($value, $key) => $key !== '' && filled($value))
+            ->all();
+        $manualHlsUrlRaw = isset($validated['hls_url']) ? trim((string) $validated['hls_url']) : null;
+        $canonicalHlsUrl = filled($manualHlsUrlRaw)
+            ? $this->hlsPackageInsightService->normalizeHlsPackageMasterUrl($manualHlsUrlRaw)
+            : null;
+        $storedHlsUrl = data_get($existingMetadata, 'playback.hls_url');
+        $hlsUrlUnchanged = filled($canonicalHlsUrl)
+            && is_string($storedHlsUrl)
+            && trim($storedHlsUrl) === trim((string) $canonicalHlsUrl)
+            && $movie->processing_status === 'ready';
+        $shouldValidateHlsAsync = filled($canonicalHlsUrl) && ! $hlsUrlUnchanged;
+        $nextProcessingStatus = match (true) {
+            $hlsUrlUnchanged => 'ready',
+            filled($canonicalHlsUrl) => 'queued',
+            default => 'pending',
+        };
+        $resolvedSourcePath = $movie->mediaAsset?->source_path;
+        $resolvedSubtitleSourcePath = $subtitleSourcePath;
+        $resolvedAudioTracks = $movie->audio_tracks ?? [];
+        $resolvedHasDubbedAudio = (bool) $movie->has_dubbed_audio;
+        $resolvedDubbedSourcePath = $movie->dubbed_source_path;
+        $resolvedHasSubtitle = filled($resolvedSubtitleSourcePath);
+        $castMembers = collect($validated['cast_members'] ?? [])
+            ->map(fn ($item) => trim((string) $item))
+            ->filter()
+            ->values()
+            ->all();
+        $directors = collect($validated['directors'] ?? [])
+            ->map(fn ($item) => trim((string) $item))
+            ->filter()
+            ->values()
+            ->all();
+        $writers = collect($validated['writers'] ?? [])
+            ->map(fn ($item) => trim((string) $item))
+            ->filter()
+            ->values()
+            ->all();
+        $genres = $this->tmdbService->localizeGenreNames(
+            collect($validated['genres'] ?? [])
+                ->map(fn ($item) => trim((string) $item))
+                ->filter()
+                ->values()
+                ->all(),
+            'movie',
+        );
+        $tags = collect($validated['tags'] ?? [])
+            ->map(fn ($item) => trim((string) $item))
+            ->filter()
+            ->values()
+            ->all();
+        $languages = collect($validated['languages'] ?? [])
+            ->map(fn ($item) => trim((string) $item))
+            ->filter()
+            ->values()
+            ->all();
+        $countries = collect($validated['countries'] ?? [])
+            ->map(fn ($item) => trim((string) $item))
+            ->filter()
+            ->values()
+            ->all();
+        $ratingValue = isset($validated['rating']) ? (float) $validated['rating'] : null;
+        $primaryNetwork = $this->firstFilterValue([
+            (string) ($validated['provider_name'] ?? ''),
+        ]);
+        $filterIds = $this->buildFilterIdentifiers($genres, $countries, $primaryNetwork);
+        $primaryGenre = $filterIds['genre_ids'][0] ?? null;
+        $primaryCountry = $filterIds['country_ids'][0] ?? null;
+        $primaryNetworkId = $filterIds['network_ids'][0] ?? null;
+        $actors = collect($validated['actors'] ?? [])
+            ->map(function (array $actor) {
+                $name = trim((string) ($actor['name'] ?? ''));
+
+                if ($name === '') {
+                    return null;
+                }
+
+                $character = trim((string) ($actor['character'] ?? ''));
+                $profileUrl = trim((string) ($actor['profile_url'] ?? ''));
+
+                return [
+                    'name' => $name,
+                    'character' => $character !== '' ? $character : null,
+                    'profile_url' => $profileUrl !== '' ? $profileUrl : null,
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+
+        if ($castMembers === [] && $actors !== []) {
+            $castMembers = collect($actors)
+                ->pluck('name')
+                ->filter()
+                ->values()
+                ->all();
+        }
+
+        $metadata = array_replace_recursive($existingMetadata, [
+            'tmdb' => array_replace(
+                is_array($existingMetadata['tmdb'] ?? null) ? $existingMetadata['tmdb'] : [],
+                [
+                    'query' => filled($validated['tmdb_query'] ?? null) ? trim((string) $validated['tmdb_query']) : null,
+                    'tmdb_id' => $validated['tmdb_id'] ?? null,
+                    'imdb_id' => filled($validated['imdb_id'] ?? null) ? trim((string) $validated['imdb_id']) : null,
+                    'rating' => isset($validated['rating']) ? (float) $validated['rating'] : null,
+                    'original_language' => filled($validated['original_language'] ?? null)
+                        ? trim((string) $validated['original_language'])
+                        : null,
+                    'runtime_minutes' => isset($validated['runtime_minutes']) ? (int) $validated['runtime_minutes'] : null,
+                    'directors' => $directors,
+                    'writers' => $writers,
+                    'production_status' => filled($validated['production_status'] ?? null)
+                        ? trim((string) $validated['production_status'])
+                        : null,
+                    'network' => filled($validated['provider_name'] ?? null)
+                        ? trim((string) $validated['provider_name'])
+                        : data_get($existingMetadata, 'tmdb.network'),
+                    'budget' => isset($validated['budget']) ? (int) $validated['budget'] : null,
+                    'revenue' => isset($validated['revenue']) ? (int) $validated['revenue'] : null,
+                    'genres' => $genres,
+                    'tags' => $tags,
+                    'languages' => $languages,
+                    'countries' => $countries,
+                    'actors' => $actors,
+                ],
+                $this->optionalPublicationMediaMetadata($validated),
+            ),
+            'filters' => [
+                'genre_ids' => $filterIds['genre_ids'],
+                'country_ids' => $filterIds['country_ids'],
+                'network_ids' => $filterIds['network_ids'],
+            ],
+            'playback' => [
+                'hls_url' => $canonicalHlsUrl ?? $manualHlsUrlRaw,
+                'downloads' => $downloadLinks,
+            ],
+        ]);
+
+        $movieUpdate = [
+            'title' => $validated['title'],
+            'slug' => $validated['slug'],
+            'original_title' => $validated['original_title'] ?? null,
+            'provider_name' => filled($validated['provider_name'] ?? null)
+                ? trim((string) $validated['provider_name'])
+                : null,
+            'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
+            'poster_path' => $posterPath,
+            'trailer_path' => $trailerPath,
+            'synopsis' => $validated['synopsis'] ?? null,
+            'age_rating' => $validated['age_rating'] ?? null,
+            'release_year' => $validated['release_year'] ?? null,
+            'cast_members' => $castMembers,
+            'has_dubbed_audio' => $resolvedHasDubbedAudio,
+            'dubbed_source_path' => $resolvedDubbedSourcePath,
+            'audio_tracks' => $resolvedAudioTracks,
+            'has_subtitle' => $resolvedHasSubtitle,
+            'subtitle_source_path' => $resolvedSubtitleSourcePath,
+            'processing_status' => $nextProcessingStatus,
+            'processing_error' => null,
+            'metadata' => $metadata,
+        ];
+
+        // If migration hasn't been applied yet, avoid crashing on missing columns.
+        if (Schema::hasColumn('movies', 'filter_rating')) {
+            $movieUpdate += [
+                'filter_rating' => $ratingValue,
+                'filter_primary_genre' => $primaryGenre,
+                'filter_primary_country' => $primaryCountry,
+                'filter_primary_network' => $primaryNetworkId,
+            ];
+        }
+
+        $movie->update($movieUpdate);
+
+        $this->genreCatalogService->syncMovieGenres($movie, $genres);
         $movie->update([
-            'processing_status' => 'queued',
-            'processing_error' => null,
+            'origin_country' => $primaryCountry ? strtoupper(substr($primaryCountry, 0, 2)) : null,
+            'original_language' => filled($validated['original_language'] ?? null)
+                ? strtolower(trim((string) $validated['original_language']))
+                : (is_string(data_get($metadata, 'tmdb.original_language'))
+                    ? strtolower((string) data_get($metadata, 'tmdb.original_language'))
+                    : null),
+            'content_rating' => filled($validated['age_rating'] ?? null)
+                ? trim((string) $validated['age_rating'])
+                : null,
         ]);
 
-        $movie->mediaAsset->update([
-            'processing_status' => 'queued',
-            'processing_error' => null,
-            'selected_hls_profiles' => $validated['selected_hls_profiles'] ?? $movie->mediaAsset->selected_hls_profiles ?? array_keys((array) config('cinema.hls_profiles', [])),
-            'stop_requested' => false,
-        ]);
+        if ($movie->mediaAsset) {
+            $movie->mediaAsset->update([
+                'source_path' => $resolvedSourcePath ?: $movie->mediaAsset->source_path,
+                'source_is_external' => $this->isPublicationSourceExternal($resolvedSourcePath ?: $movie->mediaAsset->source_path),
+                'master_playlist_relative_path' => (string) (($canonicalHlsUrl ?? $manualHlsUrlRaw) ?: ''),
+                'processing_status' => $nextProcessingStatus,
+                'processing_progress_percent' => $nextProcessingStatus === 'ready' ? 100 : 0,
+                'processing_eta_seconds' => null,
+                'current_profile_key' => null,
+                'processing_error' => null,
+                'last_processed_at' => $nextProcessingStatus === 'ready' ? now() : null,
+                'selected_hls_profiles' => [],
+            ]);
+        } elseif ($resolvedSourcePath) {
+            $movie->mediaAsset()->create([
+                'kind' => 'video',
+                'source_path' => $resolvedSourcePath,
+                'source_is_external' => $this->isPublicationSourceExternal($resolvedSourcePath),
+                'managed_relative_directory' => $movie->media_folder,
+                'hls_output_relative_directory' => $this->mediaPathService->hlsRelativeDirectory($movie->slug),
+                'master_playlist_relative_path' => (string) (($canonicalHlsUrl ?? $manualHlsUrlRaw) ?: ''),
+                'selected_hls_profiles' => [],
+                'processing_status' => $nextProcessingStatus,
+                'processing_progress_percent' => 0,
+                'processing_eta_seconds' => null,
+                'current_profile_key' => null,
+                'processing_error' => null,
+                'last_processed_at' => null,
+            ]);
+        }
 
-        ProcessMovieMediaAssetJob::dispatch($movie->mediaAsset->id, $request->user()->id);
+        $movie->refresh();
+        $this->queueMovieCreditsSync($movie->id, $validated);
+
+        if ($shouldValidateHlsAsync && filled($canonicalHlsUrl)) {
+            ValidateHlsManifestJob::dispatch(
+                $movie->id,
+                (string) $manualHlsUrlRaw,
+                $subtitleSourcePath,
+            )->afterResponse();
+        }
+
+        $this->invalidateAdminMoviesListCache();
 
         return response()->json([
             'success' => true,
-            'message' => 'Movie processing has been queued.',
+            'message' => $shouldValidateHlsAsync
+                ? 'Publication form saved. HLS manifest validation is running in the background.'
+                : ($hlsUrlUnchanged
+                    ? 'Publication form saved successfully.'
+                    : 'Publication form saved successfully.'),
             'data' => [
-                'movie' => $this->transformMovie($movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns'])),
+                'movie' => $this->transformMovie(
+                    $movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator']),
+                    true
+                ),
             ],
-        ], 202);
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     */
+    private function queueMovieCreditsSync(int $movieId, array $validated): void
+    {
+        $cast = collect($validated['cast'] ?? [])
+            ->filter(fn ($row) => is_array($row) && (filled($row['name'] ?? null) || filled($row['tmdb_person_id'] ?? null)))
+            ->values()
+            ->all();
+
+        $crew = collect($validated['crew'] ?? [])
+            ->filter(fn ($row) => is_array($row))
+            ->values()
+            ->all();
+
+        $tmdbId = isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null;
+
+        if ($cast === [] && ($tmdbId === null || $tmdbId <= 0)) {
+            return;
+        }
+
+        SyncMoviePersonCreditsJob::dispatch($movieId, $cast, $crew, $tmdbId)->afterResponse();
+    }
+
+    public function checkHlsExists(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'base_url' => ['required', 'string', 'max:2048'],
+            'episodes' => ['required', 'array', 'max:200'],
+            'episodes.*.season' => ['required', 'integer', 'min:1'],
+            'episodes.*.episode' => ['required', 'integer', 'min:1'],
+        ])->validate();
+
+        $baseUrl = $this->hlsPackageInsightService->normalizeDirectoryUrl(
+            trim($validated['base_url']),
+        );
+
+        if (!filled($baseUrl)) {
+            return response()->json([
+                'success' => true,
+                'data' => collect($validated['episodes'])->map(fn ($ep) => [
+                    'season' => $ep['season'],
+                    'episode' => $ep['episode'],
+                    'exists' => false,
+                ])->all(),
+            ]);
+        }
+
+        $existingEpisodes = $this->hlsPackageInsightService->checkEpisodesExistParallel(
+            $baseUrl,
+            $validated['episodes'],
+        );
+
+        $results = [];
+
+        foreach ($validated['episodes'] as $ep) {
+            $key = sprintf('s%02de%02d', $ep['season'], $ep['episode']);
+            $results[] = [
+                'season' => $ep['season'],
+                'episode' => $ep['episode'],
+                'exists' => isset($existingEpisodes[$key]),
+            ];
+        }
+
+        return response()->json(['success' => true, 'data' => $results]);
+    }
+
+    public function previewHlsPackage(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'hls_url' => ['required', 'string', 'max:2048'],
+            'resolve_downloads' => ['sometimes', 'boolean'],
+        ])->validate();
+
+        $raw = trim((string) $validated['hls_url']);
+        $canonical = $this->hlsPackageInsightService->normalizeHlsPackageMasterUrl($raw);
+
+        if (!filled($canonical)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A valid HLS package URL or path is required.',
+                'errors' => [
+                    'hls_url' => ['Invalid HLS URL.'],
+                ],
+            ], 422);
+        }
+
+        $manifest = $this->hlsPackageInsightService->loadHlsContent($canonical);
+
+        if (!filled($manifest) || stripos((string) $manifest, '#EXTM3U') === false) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The HLS master playlist could not be loaded.',
+                'errors' => [
+                    'hls_url' => ['Could not read master.m3u8 from this URL or path.'],
+                ],
+            ], 422);
+        }
+
+        $insights = $this->hlsPackageInsightService->extractPlaybackInsights(
+            $canonical,
+            $manifest,
+            verifyRemoteDownloadTargets: true,
+        );
+
+        $downloadLinks = [];
+
+        if ($request->boolean('resolve_downloads')) {
+            try {
+                $downloadLinks = $this->hlsPackageInsightService->resolveProgressiveDownloadLinksForPreview($canonical);
+            } catch (\Throwable) {
+                $downloadLinks = [];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'canonical_hls_url' => $canonical,
+                'subtitle_source_url' => $insights['subtitle_source_path'],
+                'dubbed_audio_url' => $insights['dubbed_source_path'],
+                'download_links' => $downloadLinks,
+                'has_subtitle' => $insights['has_subtitle'],
+                'has_dubbed_audio' => $insights['has_dubbed_audio'],
+                'audio_tracks' => collect($insights['audio_tracks'] ?? [])
+                    ->map(fn (array $track) => [
+                        'label' => $track['label'] ?? '',
+                        'language' => $track['language'] ?? '',
+                        'source_url' => $track['source_path'] ?? null,
+                    ])
+                    ->values()
+                    ->all(),
+            ],
+        ]);
+    }
+
+    private function isPublicationSourceExternal(?string $path): bool
+    {
+        if (!filled($path)) {
+            return false;
+        }
+
+        if (preg_match('#^https?://#i', (string) $path) === 1) {
+            return true;
+        }
+
+        return false;
     }
 
     public function stopProcessing(Movie $movie): JsonResponse
     {
-        $movie->load('mediaAsset');
-
-        if (!$movie->mediaAsset instanceof MediaAsset) {
-            return response()->json([
-                'success' => false,
-                'message' => 'No media asset is registered for this movie.',
-            ], 404);
-        }
-
-        if (!in_array($movie->processing_status, ['queued', 'processing'], true)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'This movie is not currently processing.',
-            ], 422);
-        }
-
-        $this->hlsTranscodingService->stop($movie->mediaAsset);
-
         return response()->json([
-            'success' => true,
-            'message' => 'Movie processing was stopped and partial outputs were cleaned.',
-            'data' => [
-                'movie' => $this->transformMovie($movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator', 'genres', 'countries', 'languages', 'tags', 'actors']), true),
-            ],
-        ]);
+            'success' => false,
+            'message' => 'Internal HLS processing has been removed from this project.',
+        ], 410);
     }
 
     public function destroy(Movie $movie): JsonResponse
@@ -488,6 +805,7 @@ class AdminMovieController extends Controller
         $slug = $movie->slug;
 
         $this->movieCleanupService->deleteMovie($movie);
+        $this->invalidateAdminMoviesListCache();
 
         return response()->json([
             'success' => true,
@@ -501,45 +819,85 @@ class AdminMovieController extends Controller
         ]);
     }
 
-    public function updatePublishStatus(Request $request, Movie $movie): JsonResponse
-    {
+    public function updatePublishStatus(
+        Request $request,
+        Movie $movie,
+        PublishScheduleService $publishScheduleService,
+    ): JsonResponse {
         $validated = Validator::make($request->all(), [
-            'publish_status' => ['required', Rule::in(['draft', 'published'])],
+            'publish_status' => ['required', Rule::in(['draft', 'scheduled', 'published'])],
+            'scheduled_for' => ['nullable', 'string', 'max:32'],
         ])->validate();
 
         $publishStatus = $validated['publish_status'];
+        $scheduledInput = $publishStatus === 'scheduled'
+            ? ($validated['scheduled_for'] ?? $movie->scheduled_for)
+            : null;
 
-        if (
-            $publishStatus === 'published'
-            && $movie->processing_status !== 'ready'
-        ) {
+        if ($publishStatus === 'scheduled' && blank($scheduledInput)) {
             return response()->json([
                 'success' => false,
-                'message' => 'Only processed movies can be published.',
+                'message' => 'Scheduled movies require a schedule date.',
+                'errors' => [
+                    'scheduled_for' => ['A schedule date is required for scheduled movies.'],
+                ],
+            ], 422);
+        }
+
+        $publishState = $publishScheduleService->resolvePublishState(
+            $publishStatus,
+            $scheduledInput,
+            $movie->published_at,
+        );
+
+        if ($publishState['publish_status'] === 'published' && ! in_array($movie->processing_status, ['ready'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => match ($movie->processing_status) {
+                    'queued' => 'HLS manifest validation is still running. Please wait until processing completes.',
+                    'failed' => 'HLS validation failed. Fix the HLS URL before publishing.',
+                    default => 'A manual HLS URL must be set before publishing.',
+                },
             ], 422);
         }
 
         $movie->update([
-            'publish_status' => $publishStatus,
-            'published_at' => $publishStatus === 'published' ? now() : null,
+            'publish_status' => $publishState['publish_status'],
+            'scheduled_for' => $publishState['scheduled_for'],
+            'published_at' => $publishState['published_at'],
         ]);
+
+        $this->invalidateAdminMoviesListCache();
+        $publishScheduleService->syncScheduledPublishRunner($movie->fresh());
 
         return response()->json([
             'success' => true,
-            'message' => $publishStatus === 'published'
-                ? 'Movie published successfully.'
-                : 'Movie moved back to draft.',
+            'message' => match ($publishState['publish_status']) {
+                'published' => 'Movie published successfully.',
+                'scheduled' => 'Movie scheduled successfully.',
+                default => 'Movie moved back to draft.',
+            },
             'data' => [
-                'movie' => $this->transformMovie($movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator', 'genres', 'countries', 'languages', 'tags', 'actors']), true),
+                'movie' => $this->transformMovie($movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator']), true),
             ],
         ]);
     }
 
     private function transformMovie(Movie $movie, bool $includeRuns = false): array
     {
-        $movie->loadMissing(['mediaAsset.variants', 'creator', 'genres', 'countries', 'languages', 'tags', 'actors']);
+        $relations = ['mediaAsset.variants', 'creator'];
+        if ($includeRuns) {
+            $relations[] = 'castMembers.person';
+            $relations[] = 'crewMembers.person';
+        }
+        $movie->loadMissing($relations);
 
         $mediaAsset = $movie->mediaAsset;
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+        $masterPlaylistUrl = $this->resolvePlaylistUrl(
+            $mediaAsset?->master_playlist_relative_path,
+            data_get($metadata, 'playback.hls_url')
+        );
         $variants = $mediaAsset?->variants
             ->sortBy('bandwidth')
             ->values()
@@ -550,7 +908,7 @@ class AdminMovieController extends Controller
                     'resolution' => $variant->resolution,
                     'bandwidth' => $variant->bandwidth,
                     'playlist_relative_path' => $variant->playlist_relative_path,
-                    'playlist_url' => $this->mediaPathService->toPublicUrl($variant->playlist_relative_path),
+                    'playlist_url' => $this->resolvePlaylistUrl($variant->playlist_relative_path),
                     'codecs' => $variant->codecs,
                     'is_active' => $variant->is_active,
                 ];
@@ -567,73 +925,127 @@ class AdminMovieController extends Controller
             'duration_seconds' => $movie->duration_seconds,
             'provider_name' => $movie->provider_name,
             'poster_path' => $movie->poster_path,
-            'poster_url' => $this->mediaPathService->inferPublicUrlFromAbsolutePath($movie->poster_path),
+            'poster_url' => $this->resolveManagedOrExternalUrl($movie->poster_path, data_get($metadata, 'tmdb.poster_url')),
             'trailer_path' => $movie->trailer_path,
-            'trailer_url' => $this->mediaPathService->inferPublicUrlFromAbsolutePath($movie->trailer_path),
+            'trailer_url' => $this->resolveManagedOrExternalUrl($movie->trailer_path, data_get($metadata, 'tmdb.trailer_url')),
             'has_dubbed_audio' => $movie->has_dubbed_audio,
             'dubbed_source_path' => $movie->dubbed_source_path,
-            'dubbed_source_url' => $this->mediaPathService->inferPublicUrlFromAbsolutePath($movie->dubbed_source_path),
+            'dubbed_source_url' => $this->resolveManagedOrExternalUrl($movie->dubbed_source_path),
             'audio_tracks' => collect($movie->audio_tracks ?? [])
                 ->map(function (array $track) {
                     return [
-                        'label' => $track['label'] ?? 'صوت اضافه',
+                        'label' => $track['label'] ?? 'Extra audio',
                         'language' => $track['language'] ?? 'und',
                         'source_path' => $track['source_path'] ?? null,
-                        'source_url' => $this->mediaPathService->inferPublicUrlFromAbsolutePath($track['source_path'] ?? null),
+                        'source_url' => $this->resolveManagedOrExternalUrl($track['source_path'] ?? null),
                     ];
                 })
                 ->values()
                 ->all(),
             'has_subtitle' => $movie->has_subtitle,
             'subtitle_source_path' => $movie->subtitle_source_path,
-            'subtitle_source_url' => $this->mediaPathService->inferPublicUrlFromAbsolutePath($movie->subtitle_source_path),
+            'subtitle_source_url' => $this->resolveManagedOrExternalUrl($movie->subtitle_source_path),
             'age_rating' => $movie->age_rating,
             'cast_members' => $movie->cast_members ?? [],
+            'tmdb_id' => $movie->tmdb_id,
+            'cast' => $includeRuns
+                ? $movie->castMembers->map(function (MovieCast $row) {
+                    return [
+                        'tmdb_person_id' => $row->person?->tmdb_person_id,
+                        'person_id' => $row->person_id,
+                        'name' => $row->person?->name,
+                        'character' => $row->character_name,
+                        'profile_url' => $row->person?->getProfileImageUrl(),
+                        'credit_id' => $row->tmdb_credit_id,
+                        'order' => $row->cast_order,
+                        'known_for_department' => $row->person?->known_for_department ?? 'Acting',
+                        'slug' => $row->person?->slug,
+                    ];
+                })->values()->all()
+                : [],
+            'crew' => $includeRuns
+                ? $movie->crewMembers->map(function (MovieCrew $row) {
+                    return [
+                        'tmdb_person_id' => $row->person?->tmdb_person_id,
+                        'person_id' => $row->person_id,
+                        'name' => $row->person?->name,
+                        'job' => $row->job,
+                        'department' => $row->department,
+                        'profile_url' => $row->person?->getProfileImageUrl(),
+                        'credit_id' => $row->tmdb_credit_id,
+                        'slug' => $row->person?->slug,
+                    ];
+                })->values()->all()
+                : [],
             'publish_status' => $movie->publish_status,
             'processing_status' => $movie->processing_status,
             'processing_error' => $movie->processing_error,
-            'scheduled_for' => $movie->scheduled_for?->toISOString(),
+            'scheduled_for' => app(PublishScheduleService::class)->formatScheduleForApi($movie->scheduled_for),
             'published_at' => $movie->published_at?->toISOString(),
             'media_folder' => $movie->media_folder,
             'media_folder_absolute' => $this->mediaPathService->toAbsolutePath($movie->media_folder),
+            'metadata' => [
+                'tmdb' => [
+                    'query' => data_get($metadata, 'tmdb.query'),
+                    'tmdb_id' => data_get($metadata, 'tmdb.tmdb_id'),
+                    'imdb_id' => data_get($metadata, 'tmdb.imdb_id'),
+                    'poster_url' => data_get($metadata, 'tmdb.poster_url'),
+                    'backdrop_url' => data_get($metadata, 'tmdb.backdrop_url'),
+                    'trailer_url' => data_get($metadata, 'tmdb.trailer_url'),
+                    'rating' => data_get($metadata, 'tmdb.rating'),
+                    'original_language' => data_get($metadata, 'tmdb.original_language'),
+                    'runtime_minutes' => data_get($metadata, 'tmdb.runtime_minutes'),
+                    'directors' => data_get($metadata, 'tmdb.directors', []),
+                    'writers' => data_get($metadata, 'tmdb.writers', []),
+                    'production_status' => data_get($metadata, 'tmdb.production_status'),
+                    'budget' => data_get($metadata, 'tmdb.budget'),
+                    'revenue' => data_get($metadata, 'tmdb.revenue'),
+                    'genres' => $this->tmdbService->localizeGenreNames(
+                        data_get($metadata, 'tmdb.genres', []),
+                        'movie',
+                    ),
+                    'tags' => data_get($metadata, 'tmdb.tags', []),
+                    'languages' => data_get($metadata, 'tmdb.languages', []),
+                    'countries' => data_get($metadata, 'tmdb.countries', []),
+                    'actors' => data_get($metadata, 'tmdb.actors', []),
+                ],
+                'playback' => [
+                    'hls_url' => data_get($metadata, 'playback.hls_url'),
+                    'downloads' => data_get($metadata, 'playback.downloads', []),
+                ],
+            ],
             'created_at' => $movie->created_at?->toISOString(),
             'updated_at' => $movie->updated_at?->toISOString(),
             'created_by' => $movie->creator?->only(['id', 'name', 'email']),
-            'taxonomies' => [
-                'genres' => $movie->genres->map(fn ($item) => $this->transformTaxonomyReference($item))->values()->all(),
-                'countries' => $movie->countries->map(fn ($item) => $this->transformTaxonomyReference($item))->values()->all(),
-                'languages' => $movie->languages->map(fn ($item) => $this->transformTaxonomyReference($item))->values()->all(),
-                'tags' => $movie->tags->map(fn ($item) => $this->transformTaxonomyReference($item))->values()->all(),
-                'actors' => $movie->actors->map(fn ($item) => $this->transformTaxonomyReference($item))->values()->all(),
-            ],
             'media_asset' => $mediaAsset ? [
-                    'id' => $mediaAsset->id,
-                    'kind' => $mediaAsset->kind,
-                    'source_path' => $mediaAsset->source_path,
-                    'source_is_external' => $mediaAsset->source_is_external,
+                'id' => $mediaAsset->id,
+                'kind' => $mediaAsset->kind,
+                'source_path' => $mediaAsset->source_path,
+                'source_is_external' => $mediaAsset->source_is_external,
                 'managed_relative_directory' => $mediaAsset->managed_relative_directory,
                 'hls_output_relative_directory' => $mediaAsset->hls_output_relative_directory,
                 'hls_output_absolute_directory' => $this->mediaPathService->toAbsolutePath($mediaAsset->hls_output_relative_directory),
-                    'master_playlist_relative_path' => $mediaAsset->master_playlist_relative_path,
-                    'selected_hls_profiles' => $mediaAsset->selected_hls_profiles ?? array_keys((array) config('cinema.hls_profiles', [])),
-                    'master_playlist_url' => $this->mediaPathService->toPublicUrl($mediaAsset->master_playlist_relative_path),
-                    'processing_status' => $mediaAsset->processing_status,
-                    'processing_progress_percent' => $mediaAsset->processing_progress_percent !== null
-                        ? (float) $mediaAsset->processing_progress_percent
-                        : null,
-                    'processing_eta_seconds' => $mediaAsset->processing_eta_seconds,
-                    'current_profile_key' => $mediaAsset->current_profile_key,
-                    'processing_started_at' => $mediaAsset->processing_started_at?->toISOString(),
-                    'processing_error' => $mediaAsset->processing_error,
-                    'last_processed_at' => $mediaAsset->last_processed_at?->toISOString(),
-                    'variants' => $variants,
-                ] : null,
+                'master_playlist_relative_path' => $mediaAsset->master_playlist_relative_path,
+                'selected_hls_profiles' => $mediaAsset->selected_hls_profiles ?? [],
+                'master_playlist_url' => $masterPlaylistUrl,
+                'processing_status' => $mediaAsset->processing_status,
+                'processing_progress_percent' => $mediaAsset->processing_progress_percent !== null
+                    ? (float) $mediaAsset->processing_progress_percent
+                    : null,
+                'processing_eta_seconds' => $mediaAsset->processing_eta_seconds,
+                'current_profile_key' => $mediaAsset->current_profile_key,
+                'processing_started_at' => $mediaAsset->processing_started_at?->toISOString(),
+                'processing_error' => $mediaAsset->processing_error,
+                'last_processed_at' => $mediaAsset->last_processed_at?->toISOString(),
+                'variants' => $variants,
+            ] : null,
         ];
 
         if ($includeRuns && $mediaAsset) {
-            $data['media_asset']['processing_runs'] = $mediaAsset->processingRuns()
-                ->latest()
-                ->get()
+            $data['media_asset']['processing_runs'] = $mediaAsset->processingRuns
+                ->sortByDesc('id')
+                ->take(5)
+                ->values()
                 ->map(function ($run) {
                     return [
                         'id' => $run->id,
@@ -643,51 +1055,138 @@ class AdminMovieController extends Controller
                         'current_profile_key' => $run->current_profile_key,
                         'source_duration_seconds' => $run->source_duration_seconds,
                         'error_message' => $run->error_message,
-                        'ffmpeg_command' => $run->ffmpeg_command,
-                        'logs' => $run->logs,
                         'started_at' => $run->started_at?->toISOString(),
                         'finished_at' => $run->finished_at?->toISOString(),
                         'created_by' => $run->creator?->only(['id', 'name', 'email']),
                     ];
                 })
-                ->values()
                 ->all();
         }
 
         return $data;
     }
 
-    /**
-     * @param  class-string<\Illuminate\Database\Eloquent\Model>  $modelClass
-     * @return array<int, array<string, mixed>>
-     */
-    private function taxonomyOptions(string $modelClass): array
+    private function invalidateAdminMoviesListCache(): void
     {
-        $columns = ['id', 'name', 'slug'];
+        $this->catalogCacheService->scheduleRebuildAfterContentChange();
+    }
 
-        if ($modelClass === Actor::class) {
-            $columns[] = 'image_path';
+    private function transformMovieListItem(Movie $movie): array
+    {
+        $movie->loadMissing(['creator']);
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        return [
+            'id' => $movie->id,
+            'title' => $movie->title,
+            'slug' => $movie->slug,
+            'synopsis' => $movie->synopsis,
+            'release_year' => $movie->release_year,
+            'poster_url' => $this->resolveManagedOrExternalUrl($movie->poster_path, data_get($metadata, 'tmdb.poster_url')),
+            'has_dubbed_audio' => $movie->has_dubbed_audio,
+            'has_subtitle' => $movie->has_subtitle,
+            'publish_status' => $movie->publish_status,
+            'processing_status' => $movie->processing_status,
+            'processing_error' => $movie->processing_error,
+            'created_at' => $movie->created_at?->toISOString(),
+            'updated_at' => $movie->updated_at?->toISOString(),
+            'created_by' => $movie->creator?->only(['id', 'name', 'email']),
+        ];
+    }
+
+    private function resolveManagedOrExternalUrl(?string $path, ?string $externalUrl = null): ?string
+    {
+        if ($path && preg_match('#^https?://#i', $path) === 1) {
+            return $path;
         }
 
-        return $modelClass::query()
-            ->where('is_active', true)
-            ->orderBy('sort_order')
-            ->orderBy('name')
-            ->get($columns)
-            ->map(fn ($item) => $this->transformTaxonomyReference($item))
+        return $this->mediaPathService->inferPublicUrlFromAbsolutePath($path) ?: $externalUrl;
+    }
+
+    private function resolvePlaylistUrl(?string $playlistPath, ?string $fallbackUrl = null): ?string
+    {
+        if ($playlistPath && preg_match('#^https?://#i', $playlistPath) === 1) {
+            return $playlistPath;
+        }
+
+        if ($playlistPath) {
+            return $this->mediaPathService->toPublicUrl($playlistPath);
+        }
+
+        return $fallbackUrl;
+    }
+
+    /**
+     * Only overwrite TMDB media URLs when the publication form explicitly sent them.
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array<string, string|null>
+     */
+    private function optionalPublicationMediaMetadata(array $validated): array
+    {
+        $media = [];
+
+        foreach (['poster_url', 'backdrop_url', 'trailer_url'] as $field) {
+            if (!array_key_exists($field, $validated)) {
+                continue;
+            }
+
+            $value = $validated[$field];
+            $media[$field] = filled($value) ? trim((string) $value) : null;
+        }
+
+        return $media;
+    }
+
+    /**
+     * @param  array<int, string>  $values
+     */
+    private function firstFilterValue(array $values): ?string
+    {
+        foreach ($values as $value) {
+            $normalized = trim((string) $value);
+
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<int, string>  $genres
+     * @param  array<int, string>  $countries
+     * @return array{genre_ids: array<int, string>, country_ids: array<int, string>, network_ids: array<int, string>}
+     */
+    private function buildFilterIdentifiers(array $genres, array $countries, ?string $network): array
+    {
+        return [
+            'genre_ids' => $this->normalizeFilterIdentifiers($genres),
+            'country_ids' => $this->normalizeFilterIdentifiers($countries),
+            'network_ids' => $network ? $this->normalizeFilterIdentifiers([$network]) : [],
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $values
+     * @return array<int, string>
+     */
+    private function normalizeFilterIdentifiers(array $values): array
+    {
+        return collect($values)
+            ->map(fn ($value) => trim((string) $value))
+            ->filter()
+            ->map(function (string $value): string {
+                $normalized = strtolower($value);
+                $normalized = preg_replace('/[^a-z0-9]+/i', '-', $normalized) ?? '';
+                $normalized = trim($normalized, '-');
+
+                return $normalized !== '' ? $normalized : strtolower($value);
+            })
+            ->unique()
             ->values()
             ->all();
     }
 
-    private function transformTaxonomyReference($item): array
-    {
-        return [
-            'id' => $item->id,
-            'name' => $item->name,
-            'slug' => $item->slug,
-            'image_url' => property_exists($item, 'image_path') || isset($item->image_path)
-                ? $this->mediaPathService->inferPublicUrlFromAbsolutePath($item->image_path)
-                : null,
-        ];
-    }
 }

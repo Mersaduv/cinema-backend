@@ -3,6 +3,7 @@
 namespace App\Services\Cinema;
 
 use Illuminate\Support\Facades\File;
+use Illuminate\Http\UploadedFile;
 use InvalidArgumentException;
 
 class MediaPathService
@@ -47,23 +48,6 @@ class MediaPathService
         return $this->movieRelativeDirectory($slug) . '/subtitles';
     }
 
-    public function actorRelativeDirectory(string $slug): string
-    {
-        return 'taxonomies/actors/' . trim($slug, '/');
-    }
-
-    public function actorAbsoluteDirectory(string $slug): string
-    {
-        return $this->toAbsolutePath($this->actorRelativeDirectory($slug));
-    }
-
-    public function actorImageRelativePath(string $slug, string $extension = 'jpg'): string
-    {
-        $normalizedExtension = trim(strtolower($extension), '.');
-
-        return $this->actorRelativeDirectory($slug) . '/portrait.' . ($normalizedExtension !== '' ? $normalizedExtension : 'jpg');
-    }
-
     public function masterPlaylistRelativePath(string $slug): string
     {
         return $this->hlsRelativeDirectory($slug) . '/master.m3u8';
@@ -83,12 +67,66 @@ class MediaPathService
         return $this->mediaPublicBaseUrl() . '/' . $this->encodeRelativePath($relativePath);
     }
 
+    public function isRemoteMediaReference(string $path): bool
+    {
+        $trimmed = trim($path, " \t\n\r\0\x0B\"'");
+
+        if ($trimmed === '') {
+            return false;
+        }
+
+        if (preg_match('#^https?://#i', $trimmed) === 1) {
+            return true;
+        }
+
+        if (str_starts_with($trimmed, '//')) {
+            return true;
+        }
+
+        if ($this->isAbsolutePath($trimmed)) {
+            return false;
+        }
+
+        return preg_match(
+            '#^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?:[:/]|$)#i',
+            $trimmed,
+        ) === 1;
+    }
+
+    /**
+     * Hostname-style CDN paths (e.g. cinema.af/content2/...) must use HTTP, not media_root on disk.
+     */
+    public function coerceRemoteMediaUrl(string $path): string
+    {
+        $trimmed = trim($path, " \t\n\r\0\x0B\"'");
+
+        if ($trimmed === '' || !$this->isRemoteMediaReference($trimmed)) {
+            return $trimmed;
+        }
+
+        if (preg_match('#^https?://#i', $trimmed) === 1) {
+            return $trimmed;
+        }
+
+        if (str_starts_with($trimmed, '//')) {
+            return 'http:' . $trimmed;
+        }
+
+        return 'http://' . ltrim($trimmed, '/');
+    }
+
     public function normalizeInputPath(string $path): string
     {
         $path = trim($path, " \t\n\r\0\x0B\"'");
 
         if ($path === '') {
             throw new InvalidArgumentException('A valid media path is required.');
+        }
+
+        if ($this->isRemoteMediaReference($path)) {
+            throw new InvalidArgumentException(
+                'Remote media paths must be full HTTP(S) URLs (e.g. http://cinema.af/content2/...), not local disk paths.',
+            );
         }
 
         if ($this->isAbsolutePath($path)) {
@@ -153,6 +191,16 @@ class MediaPathService
     public function storeMovieSubtitle(string $path, string $slug): string
     {
         return $this->storeManagedMovieFile($path, $slug, 'subtitles', 'subtitle');
+    }
+
+    public function storeUploadedMovieDubbedSource(UploadedFile $file, string $slug): string
+    {
+        return $this->storeUploadedManagedMovieFile($file, $slug, 'audio', 'dubbed');
+    }
+
+    public function storeUploadedMovieSubtitle(UploadedFile $file, string $slug): string
+    {
+        return $this->storeUploadedManagedMovieFile($file, $slug, 'subtitles', 'subtitle');
     }
 
     public function isPathInside(string $path, string $directory): bool
@@ -421,6 +469,34 @@ class MediaPathService
 
         if (!is_file($destinationPath) || !is_readable($destinationPath)) {
             throw new InvalidArgumentException("Managed media file could not be prepared: {$destinationPath}");
+        }
+
+        return $this->ensureReadableFile($destinationPath);
+    }
+
+    public function storeUploadedManagedMovieFile(UploadedFile $file, string $slug, string $bucket, string $baseName): string
+    {
+        if (!$file->isValid()) {
+            throw new InvalidArgumentException("Uploaded {$baseName} file is invalid.");
+        }
+
+        $directories = $this->ensureMovieDirectories($slug);
+        $destinationDirectory = match ($bucket) {
+            'assets' => $directories['assets'],
+            'audio' => $directories['audio'],
+            'subtitles' => $directories['subtitles'],
+            default => $directories['movie'],
+        };
+
+        $extension = strtolower($file->getClientOriginalExtension() ?: $file->extension() ?: 'bin');
+        $destinationPath = $destinationDirectory . DIRECTORY_SEPARATOR . $baseName . '.' . $extension;
+
+        $this->deleteSiblingManagedFiles($destinationDirectory, $baseName, $extension);
+
+        $copied = File::copy($file->getRealPath(), $destinationPath);
+
+        if (!$copied || !is_file($destinationPath) || !is_readable($destinationPath)) {
+            throw new InvalidArgumentException("Uploaded {$baseName} file could not be copied into the media library.");
         }
 
         return $this->ensureReadableFile($destinationPath);

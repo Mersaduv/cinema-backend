@@ -2,8 +2,6 @@
 
 namespace App\Jobs;
 
-use App\Models\MediaAsset;
-use App\Services\Cinema\HlsTranscodingService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
@@ -18,21 +16,7 @@ class ProcessMovieMediaAssetJob implements ShouldQueue
         $this->onQueue('media-processing');
     }
 
-    public function handle(HlsTranscodingService $transcodingService): void
+    public function handle(): void
     {
-        $mediaAsset = MediaAsset::query()->with('mediable')->find($this->mediaAssetId);
-
-        if (!$mediaAsset) {
-            return;
-        }
-
-        if (
-            $mediaAsset->stop_requested ||
-            !in_array($mediaAsset->processing_status, ['queued', 'processing'], true)
-        ) {
-            return;
-        }
-
-        $transcodingService->process($mediaAsset, $this->actorId);
     }
 }

@@ -8,22 +8,20 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 class Genre extends Model
 {
     protected $fillable = [
+        'tmdb_id',
         'name',
         'slug',
-        'description',
-        'is_active',
-        'sort_order',
+        'type',
+        'display_order',
     ];
-
-    protected function casts(): array
-    {
-        return [
-            'is_active' => 'boolean',
-        ];
-    }
 
     public function movies(): BelongsToMany
     {
-        return $this->belongsToMany(Movie::class);
+        return $this->belongsToMany(Movie::class, 'movie_genre');
+    }
+
+    public function series(): BelongsToMany
+    {
+        return $this->belongsToMany(Series::class, 'series_genre');
     }
 }

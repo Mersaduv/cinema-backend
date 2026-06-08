@@ -2,7 +2,11 @@
 
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Schedule::command('cinema:publish-scheduled')->everyMinute();
+Schedule::command('cinema:sync-tmdb-reference-data')->weeklyOn(0, '00:00');

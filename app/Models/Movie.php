@@ -2,19 +2,30 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphOne;
 
 class Movie extends Model
 {
     protected $fillable = [
+        'tmdb_id',
         'title',
         'slug',
         'original_title',
         'synopsis',
         'release_year',
+        'origin_country',
+        'original_language',
+        'content_rating',
+        'filter_rating',
+        'cached_avg_rating',
+        'filter_primary_genre',
+        'filter_primary_country',
+        'filter_primary_network',
         'duration_seconds',
         'provider_name',
         'poster_path',
@@ -59,28 +70,38 @@ class Movie extends Model
         return $this->belongsTo(User::class, 'created_by');
     }
 
+    public function castMembers(): HasMany
+    {
+        return $this->hasMany(MovieCast::class)->orderBy('cast_order');
+    }
+
+    public function crewMembers(): HasMany
+    {
+        return $this->hasMany(MovieCrew::class);
+    }
+
+    public function persons(): BelongsToMany
+    {
+        return $this->belongsToMany(Person::class, 'movie_cast')
+            ->withPivot(['tmdb_credit_id', 'character_name', 'cast_order'])
+            ->withTimestamps();
+    }
+
     public function genres(): BelongsToMany
     {
-        return $this->belongsToMany(Genre::class);
+        return $this->belongsToMany(Genre::class, 'movie_genre');
     }
 
-    public function countries(): BelongsToMany
+    public function reviews(): HasMany
     {
-        return $this->belongsToMany(Country::class);
+        return $this->hasMany(Review::class, 'reviewable_id')
+            ->where('reviewable_type', 'movie');
     }
 
-    public function languages(): BelongsToMany
+    public function scopePublished(Builder $query): Builder
     {
-        return $this->belongsToMany(Language::class);
-    }
-
-    public function tags(): BelongsToMany
-    {
-        return $this->belongsToMany(Tag::class);
-    }
-
-    public function actors(): BelongsToMany
-    {
-        return $this->belongsToMany(Actor::class);
+        return $query
+            ->where('publish_status', 'published')
+            ->latest('published_at');
     }
 }

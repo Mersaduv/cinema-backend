@@ -14,6 +14,7 @@ class MovieIngestionService
 {
     public function __construct(
         private readonly MediaPathService $mediaPathService,
+        private readonly PublishScheduleService $publishScheduleService,
     ) {
     }
 
@@ -37,7 +38,7 @@ class MovieIngestionService
         $subtitleSourcePath = $this->resolveSubtitleSourcePath($payload, $slug);
         $audioTracks = $this->resolveAudioTracks($payload, $slug);
 
-        return DB::transaction(function () use (
+        $movie = DB::transaction(function () use (
             $payload,
             $actor,
             $slug,
@@ -53,6 +54,10 @@ class MovieIngestionService
             $masterPlaylist
         ) {
             $publishStatus = (string) ($payload['publish_status'] ?? 'draft');
+            $publishState = $this->publishScheduleService->resolvePublishState(
+                $publishStatus,
+                $payload['scheduled_for'] ?? null,
+            );
 
             $movie = Movie::create([
                 'title' => (string) ($payload['title'] ?? $payload['original_title']),
@@ -69,10 +74,10 @@ class MovieIngestionService
                 'has_subtitle' => (bool) ($payload['has_subtitle'] ?? false),
                 'subtitle_source_path' => (bool) ($payload['has_subtitle'] ?? false) ? $subtitleSourcePath : null,
                 'media_folder' => $mediaFolder,
-                'publish_status' => $publishStatus !== '' ? $publishStatus : 'draft',
+                'publish_status' => $publishState['publish_status'] !== '' ? $publishState['publish_status'] : 'draft',
                 'processing_status' => 'pending',
-                'scheduled_for' => $payload['scheduled_for'] ?? null,
-                'published_at' => $publishStatus === 'published' ? now() : null,
+                'scheduled_for' => $publishState['scheduled_for'],
+                'published_at' => $publishState['published_at'],
                 'metadata' => [
                     'media_root' => $this->mediaPathService->mediaRoot(),
                     'managed_directories' => [
@@ -84,25 +89,25 @@ class MovieIngestionService
                 'created_by' => $actor->id,
             ]);
 
-            $movie->mediaAsset()->create([
-                'kind' => 'video',
-                'source_path' => $sourcePath,
-                'source_is_external' => !$this->mediaPathService->isPathInside($sourcePath, $directories['movie']),
-                'managed_relative_directory' => $mediaFolder,
-                'hls_output_relative_directory' => $hlsFolder,
-                'master_playlist_relative_path' => $masterPlaylist,
-                'selected_hls_profiles' => $selectedProfiles,
-                'processing_status' => 'pending',
-            ]);
+            if ($sourcePath !== null) {
+                $movie->mediaAsset()->create([
+                    'kind' => 'video',
+                    'source_path' => $sourcePath,
+                    'source_is_external' => $this->isExternalSource($sourcePath, $directories['movie']),
+                    'managed_relative_directory' => $mediaFolder,
+                    'hls_output_relative_directory' => $hlsFolder,
+                    'master_playlist_relative_path' => $masterPlaylist,
+                    'selected_hls_profiles' => $selectedProfiles,
+                    'processing_status' => 'pending',
+                ]);
+            }
 
-            $movie->genres()->sync($payload['genre_ids'] ?? []);
-            $movie->countries()->sync($payload['country_ids'] ?? []);
-            $movie->languages()->sync($payload['language_ids'] ?? []);
-            $movie->tags()->sync($payload['tag_ids'] ?? []);
-            $movie->actors()->sync($payload['actor_ids'] ?? []);
-
-            return $movie->load(['mediaAsset.variants', 'mediaAsset.processingRuns', 'genres', 'countries', 'languages', 'tags', 'actors']);
+            return $movie->load(['mediaAsset.variants', 'mediaAsset.processingRuns']);
         });
+
+        $this->publishScheduleService->syncScheduledPublishRunner($movie);
+
+        return $movie;
     }
 
     private function resolveUniqueSlug(string $value): string
@@ -124,7 +129,7 @@ class MovieIngestionService
         return $slug;
     }
 
-    private function resolveSourcePath(array $payload, string $movieDirectory): string
+    private function resolveSourcePath(array $payload, string $movieDirectory): ?string
     {
         if (($payload['source_file'] ?? null) instanceof UploadedFile) {
             return $this->importUploadedFile(
@@ -135,10 +140,16 @@ class MovieIngestionService
         }
 
         if (blank($payload['source_path'] ?? null)) {
-            throw new InvalidArgumentException('A source video file is required.');
+            return null;
         }
 
-        return $this->mediaPathService->ensureReadableFile((string) $payload['source_path']);
+        $sourcePath = trim((string) $payload['source_path']);
+
+        if (preg_match('#^https?://#i', $sourcePath) === 1) {
+            return $sourcePath;
+        }
+
+        return $this->mediaPathService->ensureReadableFile($sourcePath);
     }
 
     private function resolvePosterPath(array $payload, string $slug): ?string
@@ -216,6 +227,15 @@ class MovieIngestionService
         }
 
         return $this->mediaPathService->ensureReadableFile($destination);
+    }
+
+    private function isExternalSource(string $sourcePath, string $movieDirectory): bool
+    {
+        if (preg_match('#^https?://#i', $sourcePath) === 1) {
+            return true;
+        }
+
+        return !$this->mediaPathService->isPathInside($sourcePath, $movieDirectory);
     }
 
     /**

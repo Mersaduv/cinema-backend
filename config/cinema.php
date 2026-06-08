@@ -1,8 +1,26 @@
 <?php
 
 return [
+    /**
+     * Guzzle TLS verification when fetching remote HLS/metadata URLs from the API server.
+     * Set false only if you must hit HTTPS origins with broken certs in dev.
+     */
+    'remote_media_ssl_verify' => env('CINEMA_REMOTE_MEDIA_SSL_VERIFY', true),
+    /**
+     * Progressive (MP4/MKV) files for admin "download links" live under this folder relative to each HLS package root.
+     * Example: video/sources/1080/Filename.mkv
+     */
+    'hls_package_source_video_dir' => trim(env('CINEMA_HLS_SOURCE_VIDEO_DIR', 'video/sources'), '/'),
+    /**
+     * When metadata.json has no "downloads" map, probe these filenames per quality folder (in order),
+     * then scan the folder for any .mkv/.mp4/.webm file.
+     */
+    'hls_package_source_probe_filenames' => array_values(array_filter(array_map('trim', explode(',', env(
+        'CINEMA_HLS_SOURCE_PROBE_FILENAMES',
+        'source.mp4,movie.mp4,download.mp4,full.mp4'
+    ))))),
     'media_root' => env('CINEMA_MEDIA_ROOT', 'D:\\media'),
-    'media_public_base_url' => env('CINEMA_MEDIA_PUBLIC_BASE_URL', 'http://localhost/media'),
+    'media_public_base_url' => env('CINEMA_MEDIA_PUBLIC_BASE_URL', '/media'),
     'ffmpeg_binary' => env('CINEMA_FFMPEG_BINARY', 'ffmpeg'),
     'movies_directory' => 'movies',
     'hls_directory' => 'hls',

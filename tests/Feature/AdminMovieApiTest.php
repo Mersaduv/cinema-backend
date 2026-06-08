@@ -2,20 +2,13 @@
 
 namespace Tests\Feature;
 
-use App\Jobs\ProcessMovieMediaAssetJob;
-use App\Models\Country;
-use App\Models\Genre;
-use App\Models\Language;
-use App\Models\Actor;
 use App\Models\Role;
-use App\Models\Tag;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -62,67 +55,10 @@ class AdminMovieApiTest extends TestCase
         ]);
     }
 
-    public function test_admin_can_register_movie_with_taxonomies(): void
-    {
-        $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('taxonomy-source.mp4');
-        $genre = Genre::query()->create(['name' => 'Action', 'slug' => 'action']);
-        $country = Country::query()->create(['name' => 'USA', 'slug' => 'usa']);
-        $language = Language::query()->create(['name' => 'English', 'slug' => 'english']);
-        $tag = Tag::query()->create(['name' => 'IMAX', 'slug' => 'imax']);
-        $actor = Actor::query()->create(['name' => 'Zendaya', 'slug' => 'zendaya']);
-
-        Sanctum::actingAs($admin);
-
-        $response = $this->postJson('/api/admin/movies', [
-            'title' => 'Taxonomy Movie',
-            'source_path' => $sourcePath,
-            'publish_status' => 'draft',
-            'genre_ids' => [$genre->id],
-            'country_ids' => [$country->id],
-            'language_ids' => [$language->id],
-            'tag_ids' => [$tag->id],
-            'actor_ids' => [$actor->id],
-        ]);
-
-        $response
-            ->assertCreated()
-            ->assertJsonPath('data.movie.taxonomies.genres.0.slug', 'action')
-            ->assertJsonPath('data.movie.taxonomies.countries.0.slug', 'usa')
-            ->assertJsonPath('data.movie.taxonomies.languages.0.slug', 'english')
-            ->assertJsonPath('data.movie.taxonomies.tags.0.slug', 'imax')
-            ->assertJsonPath('data.movie.taxonomies.actors.0.slug', 'zendaya');
-
-        $this->assertDatabaseHas('genre_movie', [
-            'genre_id' => $genre->id,
-        ]);
-
-        $this->assertDatabaseHas('country_movie', [
-            'country_id' => $country->id,
-        ]);
-
-        $this->assertDatabaseHas('language_movie', [
-            'language_id' => $language->id,
-        ]);
-
-        $this->assertDatabaseHas('movie_tag', [
-            'tag_id' => $tag->id,
-        ]);
-    }
-
     public function test_admin_can_save_movie_publication_form(): void
     {
         $admin = $this->createAdminUser();
         $sourcePath = $this->createReadableMediaFile('publication-source.mp4');
-        $posterPath = $this->createReadableMediaFile('publication-poster.png');
-        $trailerPath = $this->createReadableMediaFile('publication-trailer.mp4');
-        $dubbedPath = $this->createReadableMediaFile('publication-dubbed.mka');
-        $subtitlePath = $this->createReadableMediaFile('publication-subtitle.srt');
-        $genre = Genre::query()->create(['name' => 'Drama', 'slug' => 'drama']);
-        $country = Country::query()->create(['name' => 'France', 'slug' => 'france']);
-        $language = Language::query()->create(['name' => 'French', 'slug' => 'french']);
-        $tag = Tag::query()->create(['name' => 'Festival', 'slug' => 'festival']);
-        $actor = Actor::query()->create(['name' => 'Actor One', 'slug' => 'actor-one']);
 
         Sanctum::actingAs($admin);
 
@@ -134,21 +70,54 @@ class AdminMovieApiTest extends TestCase
 
         $movieId = $createResponse->json('data.movie.id');
 
+        Http::fake([
+            'http://cinema.af/content2/movies/display-title/master.m3u8' => Http::response('', 200),
+            'http://cinema.af/content2/movies/display-title/metadata.json' => Http::response('{}', 404),
+        ]);
+
         $response = $this->putJson("/api/admin/movies/{$movieId}/publication-form", [
             'title' => 'Display Title',
-            'poster_path' => $posterPath,
-            'trailer_path' => $trailerPath,
-            'has_dubbed_audio' => true,
-            'dubbed_source_path' => $dubbedPath,
-            'has_subtitle' => true,
-            'subtitle_source_path' => $subtitlePath,
+            'slug' => 'display-title',
+            'poster_url' => 'https://image.tmdb.org/t/p/w780/poster.jpg',
+            'backdrop_url' => 'https://image.tmdb.org/t/p/original/backdrop.jpg',
+            'trailer_url' => 'https://www.youtube.com/watch?v=abc123',
             'synopsis' => 'Publication synopsis',
             'age_rating' => 'PG-13',
-            'genre_ids' => [$genre->id],
-            'country_ids' => [$country->id],
-            'language_ids' => [$language->id],
-            'tag_ids' => [$tag->id],
-            'actor_ids' => [$actor->id],
+            'release_year' => 2024,
+            'tmdb_id' => 999,
+            'imdb_id' => 'tt1234567',
+            'tmdb_query' => 'Display Title',
+            'rating' => 7.8,
+            'original_language' => 'en',
+            'runtime_minutes' => 166,
+            'directors' => ['Director One', 'Director Two'],
+            'writers' => ['Writer One'],
+            'production_status' => 'Released',
+            'budget' => 160000000,
+            'revenue' => 555000000,
+            'genres' => ['Sci-Fi', 'Adventure'],
+            'tags' => ['mind-bending', 'dream'],
+            'languages' => ['English', 'Japanese'],
+            'countries' => ['United States of America'],
+            'actors' => [
+                [
+                    'name' => 'Actor One',
+                    'character' => 'Lead',
+                    'profile_url' => 'https://image.tmdb.org/t/p/w300/actor-one.jpg',
+                ],
+                [
+                    'name' => 'Actor Two',
+                    'character' => 'Support',
+                    'profile_url' => null,
+                ],
+            ],
+            'hls_url' => 'http://cinema.af/content2/movies/display-title/master.m3u8',
+            'subtitle_source_path' => 'https://cdn1.movieland.af/subtitles/display-title/fa.vtt',
+            'download_links' => [
+                '1080p' => 'http://cinema.af/downloads/display-title-1080p.mp4',
+                '480p' => 'http://cinema.af/downloads/display-title-480p.mp4',
+            ],
+            'cast_members' => ['Actor One', 'Actor Two'],
         ]);
 
         $response
@@ -156,38 +125,286 @@ class AdminMovieApiTest extends TestCase
             ->assertJsonPath('data.movie.title', 'Display Title')
             ->assertJsonPath('data.movie.age_rating', 'PG-13')
             ->assertJsonPath('data.movie.cast_members.0', 'Actor One')
-            ->assertJsonPath('data.movie.has_dubbed_audio', true)
-            ->assertJsonPath('data.movie.has_subtitle', true)
-            ->assertJsonPath('data.movie.taxonomies.genres.0.slug', 'drama')
-            ->assertJsonPath('data.movie.taxonomies.actors.0.slug', 'actor-one');
+            ->assertJsonPath('data.movie.processing_status', 'queued')
+            ->assertJsonPath('data.movie.metadata.tmdb.tmdb_id', 999)
+            ->assertJsonPath('data.movie.metadata.tmdb.original_language', 'en')
+            ->assertJsonPath('data.movie.metadata.tmdb.runtime_minutes', 166)
+            ->assertJsonPath('data.movie.metadata.tmdb.directors.0', 'Director One')
+            ->assertJsonPath('data.movie.metadata.tmdb.writers.0', 'Writer One')
+            ->assertJsonPath('data.movie.metadata.tmdb.production_status', 'Released')
+            ->assertJsonPath('data.movie.metadata.tmdb.budget', 160000000)
+            ->assertJsonPath('data.movie.metadata.tmdb.revenue', 555000000)
+            ->assertJsonPath('data.movie.metadata.tmdb.genres.0', 'علمی-تخیلی')
+            ->assertJsonPath('data.movie.metadata.tmdb.tags.0', 'mind-bending')
+            ->assertJsonPath('data.movie.metadata.tmdb.languages.1', 'Japanese')
+            ->assertJsonPath('data.movie.metadata.tmdb.countries.0', 'United States of America')
+            ->assertJsonPath('data.movie.metadata.tmdb.actors.0.name', 'Actor One')
+            ->assertJsonPath('data.movie.metadata.tmdb.actors.0.character', 'Lead')
+            ->assertJsonPath(
+                'data.movie.metadata.playback.hls_url',
+                'http://cinema.af/content2/movies/display-title/master.m3u8'
+            )
+            ->assertJsonPath('data.movie.subtitle_source_url', 'https://cdn1.movieland.af/subtitles/display-title/fa.vtt');
 
         $this->assertDatabaseHas('movies', [
             'id' => $movieId,
             'title' => 'Display Title',
             'age_rating' => 'PG-13',
+            'processing_status' => 'ready',
         ]);
-
-        $movie = \App\Models\Movie::query()->findOrFail($movieId);
-        $managedMovieDirectory = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, storage_path('framework/testing-media-root' . DIRECTORY_SEPARATOR . 'movies' . DIRECTORY_SEPARATOR . $movie->slug));
-        $posterPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, (string) $movie->poster_path);
-        $trailerPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, (string) $movie->trailer_path);
-        $dubbedSourcePath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, (string) $movie->dubbed_source_path);
-        $subtitleSourcePath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, (string) $movie->subtitle_source_path);
-
-        $this->assertStringStartsWith($managedMovieDirectory, $posterPath);
-        $this->assertStringStartsWith($managedMovieDirectory, $trailerPath);
-        $this->assertStringStartsWith($managedMovieDirectory, $dubbedSourcePath);
-        $this->assertStringStartsWith($managedMovieDirectory, $subtitleSourcePath);
-        $this->assertFileExists($posterPath);
-        $this->assertFileExists($trailerPath);
-        $this->assertFileExists($dubbedSourcePath);
-        $this->assertFileExists($subtitleSourcePath);
     }
 
-    public function test_admin_can_queue_movie_processing(): void
+    public function test_publication_form_syncs_subtitle_and_dubbed_from_hls_manifest(): void
     {
-        Queue::fake();
+        $admin = $this->createAdminUser();
+        $sourcePath = $this->createReadableMediaFile('manifest-source.mp4');
 
+        Sanctum::actingAs($admin);
+
+        $createResponse = $this->postJson('/api/admin/movies', [
+            'original_title' => 'Manifest Draft',
+            'source_path' => $sourcePath,
+            'start_processing' => false,
+        ]);
+
+        $movieId = $createResponse->json('data.movie.id');
+
+        Http::fake(function (\Illuminate\Http\Client\Request $request) {
+            $url = $request->url();
+
+            if (str_contains($url, '/movies/manifest/master.m3u8')) {
+                if ($request->method() === 'HEAD') {
+                    return Http::response('', 200);
+                }
+
+                return Http::response(<<<'M3U8'
+#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Original Audio",LANGUAGE="eng",AUTOSELECT=YES,DEFAULT=YES,URI="audio/eng/index.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Farsi Dub",LANGUAGE="fa",AUTOSELECT=YES,DEFAULT=NO,URI="audio/fa/index.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Persian",LANGUAGE="fa",AUTOSELECT=YES,DEFAULT=NO,FORCED=NO,URI="subtitles/fa.vtt"
+#EXT-X-STREAM-INF:BANDWIDTH=2223000,RESOLUTION=1920x1080,CODECS="avc1.64001f,mp4a.40.2",AUDIO="audio",SUBTITLES="subs"
+video/1080/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1210000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2",AUDIO="audio",SUBTITLES="subs"
+video/720/index.m3u8
+M3U8, 200);
+            }
+
+            if (str_contains($url, '/movies/manifest/metadata.json')) {
+                return Http::response('', 404);
+            }
+
+            return Http::response('Not Found', 404);
+        });
+
+        $response = $this->putJson("/api/admin/movies/{$movieId}/publication-form", [
+            'title' => 'Manifest Display',
+            'slug' => 'manifest-display',
+            'hls_url' => 'https://cdn.example.com/movies/manifest/master.m3u8',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.movie.processing_status', 'queued');
+
+        $this->assertDatabaseHas('movies', [
+            'id' => $movieId,
+            'has_subtitle' => true,
+            'has_dubbed_audio' => true,
+            'processing_status' => 'ready',
+        ]);
+    }
+
+    public function test_publication_form_skips_hls_validation_when_url_unchanged_and_ready(): void
+    {
+        $admin = $this->createAdminUser();
+        Sanctum::actingAs($admin);
+
+        $hlsUrl = 'https://cdn.example.com/stable/master.m3u8';
+
+        $createResponse = $this->postJson('/api/admin/movies', [
+            'original_title' => 'Stable Movie',
+            'publish_status' => 'draft',
+        ]);
+
+        $movieId = $createResponse->json('data.movie.id');
+
+        Http::fake([
+            $hlsUrl => Http::response('', 200),
+        ]);
+
+        $this->putJson("/api/admin/movies/{$movieId}/publication-form", [
+            'title' => 'Stable Movie',
+            'slug' => 'stable-movie',
+            'hls_url' => $hlsUrl,
+            'age_rating' => 'PG-13',
+        ])->assertOk();
+
+        Http::fake([
+            $hlsUrl => Http::response('', 500),
+        ]);
+
+        $response = $this->putJson("/api/admin/movies/{$movieId}/publication-form", [
+            'title' => 'Stable Movie Updated',
+            'slug' => 'stable-movie',
+            'hls_url' => $hlsUrl,
+            'age_rating' => 'PG-13',
+            'synopsis' => 'Only synopsis changed.',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.movie.processing_status', 'ready')
+            ->assertJsonPath('data.movie.title', 'Stable Movie Updated');
+
+        $this->assertDatabaseHas('movies', [
+            'id' => $movieId,
+            'processing_status' => 'ready',
+            'title' => 'Stable Movie Updated',
+        ]);
+    }
+
+    public function test_admin_can_preview_hls_package_endpoint(): void
+    {
+        $admin = $this->createAdminUser();
+
+        Sanctum::actingAs($admin);
+
+        Http::fake([
+            'https://cdn.example.com/pkg/master.m3u8' => Http::response("#EXTM3U\n#EXT-X-VERSION:3\n", 200),
+            'https://cdn.example.com/pkg/metadata.json' => Http::response('', 404),
+        ]);
+
+        $response = $this->postJson('/api/admin/movies/preview-hls-package', [
+            'hls_url' => 'https://cdn.example.com/pkg/master.m3u8',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.canonical_hls_url', 'https://cdn.example.com/pkg/master.m3u8')
+            ->assertJsonPath('data.download_links', []);
+    }
+
+    public function test_preview_hls_package_coerces_hostname_without_http_scheme(): void
+    {
+        $admin = $this->createAdminUser();
+
+        Sanctum::actingAs($admin);
+
+        Http::fake(function (\Illuminate\Http\Client\Request $request) {
+            $url = $request->url();
+
+            if (str_contains($url, 'cinema.af/content2/beta/2026-05-12/Fallout/season-01/episode-01/master.m3u8')) {
+                return Http::response(<<<'M3U8'
+#EXTM3U
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="FA",LANGUAGE="fa",URI="subtitles/fa.vtt"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Farsi",LANGUAGE="fa",URI="audio/fa/index.m3u8"
+M3U8, 200);
+            }
+
+            if (str_contains($url, 'cinema.af/content2/beta/2026-05-12/Fallout/season-01/episode-01/metadata.json')) {
+                return Http::response('', 404);
+            }
+
+            return Http::response('Not Found', 404);
+        });
+
+        $response = $this->postJson('/api/admin/movies/preview-hls-package', [
+            'hls_url' => 'cinema.af/content2/beta/2026-05-12/Fallout/season-01/episode-01/master.m3u8',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath(
+                'data.canonical_hls_url',
+                'http://cinema.af/content2/beta/2026-05-12/Fallout/season-01/episode-01/master.m3u8',
+            )
+            ->assertJsonPath('data.has_subtitle', true)
+            ->assertJsonPath('data.has_dubbed_audio', true);
+    }
+
+    public function test_publication_form_normalizes_hls_worker_folder_url_with_spaces(): void
+    {
+        $admin = $this->createAdminUser();
+        $sourcePath = $this->createReadableMediaFile('folder-url-source.mp4');
+
+        Sanctum::actingAs($admin);
+
+        $createResponse = $this->postJson('/api/admin/movies', [
+            'original_title' => 'Folder Url Draft',
+            'source_path' => $sourcePath,
+            'start_processing' => false,
+        ]);
+
+        $movieId = $createResponse->json('data.movie.id');
+
+        Http::fake(function (\Illuminate\Http\Client\Request $request) {
+            $url = $request->url();
+
+            if (str_contains($url, 'Sinners%202025%20Cinema.af/master.m3u8')) {
+                return Http::response("#EXTM3U\n#EXT-X-VERSION:3\n", 200);
+            }
+
+            if (str_contains($url, 'Sinners%202025%20Cinema.af/metadata.json')) {
+                return Http::response(json_encode([
+                    'hls_url' => 'master.m3u8',
+                    'has_dubbed' => true,
+                    'has_subtitle' => true,
+                    'qualities' => ['1080'],
+                    'audio_tracks' => [
+                        [
+                            'name' => 'Original',
+                            'language' => 'en',
+                            'type' => 'original',
+                            'uri' => 'audio/en/index.m3u8',
+                        ],
+                        [
+                            'name' => 'Farsi',
+                            'language' => 'fa',
+                            'type' => 'dubbed',
+                            'uri' => 'audio/fa/index.m3u8',
+                        ],
+                    ],
+                    'subtitles' => [
+                        [
+                            'name' => 'FA',
+                            'language' => 'fa',
+                            'uri' => 'subtitles/fa.vtt',
+                        ],
+                    ],
+                ], JSON_THROW_ON_ERROR), 200);
+            }
+
+            return Http::response('Not Found', 404);
+        });
+
+        $folderUrl = 'http://cinema.af/content2/beta/2026-05-09/Sinners 2025 Cinema.af';
+
+        $response = $this->putJson("/api/admin/movies/{$movieId}/publication-form", [
+            'title' => 'Sinners Folder',
+            'slug' => 'sinners-folder',
+            'hls_url' => $folderUrl,
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.movie.processing_status', 'queued')
+            ->assertJsonPath(
+                'data.movie.metadata.playback.hls_url',
+                'http://cinema.af/content2/beta/2026-05-09/Sinners%202025%20Cinema.af/master.m3u8'
+            );
+
+        $this->assertDatabaseHas('movies', [
+            'id' => $movieId,
+            'has_subtitle' => true,
+            'has_dubbed_audio' => true,
+            'processing_status' => 'ready',
+        ]);
+    }
+
+    public function test_queue_processing_endpoint_reports_removed_logic(): void
+    {
         $admin = $this->createAdminUser();
         $sourcePath = $this->createReadableMediaFile('arrival-source.mp4');
 
@@ -205,13 +422,11 @@ class AdminMovieApiTest extends TestCase
         $response = $this->postJson("/api/admin/movies/{$movieId}/process");
 
         $response
-            ->assertStatus(202)
-            ->assertJsonPath('data.movie.processing_status', 'queued');
-
-        Queue::assertPushed(ProcessMovieMediaAssetJob::class);
+            ->assertStatus(410)
+            ->assertJsonPath('message', 'Internal HLS processing has been removed from this project.');
     }
 
-    public function test_stopping_processing_clears_queued_jobs_for_same_media(): void
+    public function test_stop_processing_endpoint_reports_removed_logic(): void
     {
         $admin = $this->createAdminUser();
         $sourcePath = $this->createReadableMediaFile('stop-source.mp4');
@@ -225,95 +440,15 @@ class AdminMovieApiTest extends TestCase
         ]);
 
         $movieId = $createResponse->json('data.movie.id');
-        $mediaAssetId = $createResponse->json('data.movie.media_asset.id');
-
-        $job = new ProcessMovieMediaAssetJob($mediaAssetId, $admin->id);
-        $serializedCommand = serialize(clone $job);
-
-        DB::table('jobs')->insert([
-            [
-                'queue' => 'media-processing',
-                'payload' => json_encode([
-                    'uuid' => (string) \Illuminate\Support\Str::uuid(),
-                    'displayName' => ProcessMovieMediaAssetJob::class,
-                    'job' => 'Illuminate\Queue\CallQueuedHandler@call',
-                    'maxTries' => null,
-                    'maxExceptions' => null,
-                    'failOnTimeout' => false,
-                    'backoff' => null,
-                    'timeout' => null,
-                    'retryUntil' => null,
-                    'data' => [
-                        'commandName' => ProcessMovieMediaAssetJob::class,
-                        'command' => $serializedCommand,
-                        'batchId' => null,
-                    ],
-                ], JSON_THROW_ON_ERROR),
-                'attempts' => 0,
-                'reserved_at' => null,
-                'available_at' => now()->timestamp,
-                'created_at' => now()->timestamp,
-            ],
-            [
-                'queue' => 'media-processing',
-                'payload' => json_encode([
-                    'uuid' => (string) \Illuminate\Support\Str::uuid(),
-                    'displayName' => ProcessMovieMediaAssetJob::class,
-                    'job' => 'Illuminate\Queue\CallQueuedHandler@call',
-                    'maxTries' => null,
-                    'maxExceptions' => null,
-                    'failOnTimeout' => false,
-                    'backoff' => null,
-                    'timeout' => null,
-                    'retryUntil' => null,
-                    'data' => [
-                        'commandName' => ProcessMovieMediaAssetJob::class,
-                        'command' => $serializedCommand,
-                        'batchId' => null,
-                    ],
-                ], JSON_THROW_ON_ERROR),
-                'attempts' => 0,
-                'reserved_at' => null,
-                'available_at' => now()->timestamp,
-                'created_at' => now()->timestamp,
-            ],
-        ]);
-
-        $this->assertGreaterThan(
-            0,
-            DB::table('jobs')
-                ->where('queue', 'media-processing')
-                ->where('payload', 'like', '%ProcessMovieMediaAssetJob%')
-                ->where('payload', 'like', '%mediaAssetId%')
-                ->where('payload', 'like', '%' . $mediaAssetId . '%')
-                ->count()
-        );
-
-        \App\Models\Movie::query()->findOrFail($movieId)->update([
-            'processing_status' => 'queued',
-        ]);
-        \App\Models\Movie::query()->findOrFail($movieId)->mediaAsset()->update([
-            'processing_status' => 'queued',
-        ]);
 
         $response = $this->postJson("/api/admin/movies/{$movieId}/stop-processing");
 
         $response
-            ->assertOk()
-            ->assertJsonPath('data.movie.processing_status', 'pending');
-
-        $this->assertSame(
-            0,
-            DB::table('jobs')
-                ->where('queue', 'media-processing')
-                ->where('payload', 'like', '%ProcessMovieMediaAssetJob%')
-                ->where('payload', 'like', '%mediaAssetId%')
-                ->where('payload', 'like', '%' . $mediaAssetId . '%')
-                ->count()
-        );
+            ->assertStatus(410)
+            ->assertJsonPath('message', 'Internal HLS processing has been removed from this project.');
     }
 
-    public function test_deleting_movie_disposes_queued_processing_for_same_media(): void
+    public function test_deleting_movie_removes_movie_record(): void
     {
         $admin = $this->createAdminUser();
         $sourcePath = $this->createReadableMediaFile('delete-dispose-source.mp4');
@@ -327,41 +462,6 @@ class AdminMovieApiTest extends TestCase
         ]);
 
         $movieId = $createResponse->json('data.movie.id');
-        $mediaAssetId = $createResponse->json('data.movie.media_asset.id');
-
-        $job = new ProcessMovieMediaAssetJob($mediaAssetId, $admin->id);
-        $serializedCommand = serialize(clone $job);
-
-        DB::table('jobs')->insert([
-            'queue' => 'media-processing',
-            'payload' => json_encode([
-                'uuid' => (string) \Illuminate\Support\Str::uuid(),
-                'displayName' => ProcessMovieMediaAssetJob::class,
-                'job' => 'Illuminate\Queue\CallQueuedHandler@call',
-                'maxTries' => null,
-                'maxExceptions' => null,
-                'failOnTimeout' => false,
-                'backoff' => null,
-                'timeout' => null,
-                'retryUntil' => null,
-                'data' => [
-                    'commandName' => ProcessMovieMediaAssetJob::class,
-                    'command' => $serializedCommand,
-                    'batchId' => null,
-                ],
-            ], JSON_THROW_ON_ERROR),
-            'attempts' => 0,
-            'reserved_at' => null,
-            'available_at' => now()->timestamp,
-            'created_at' => now()->timestamp,
-        ]);
-
-        \App\Models\Movie::query()->findOrFail($movieId)->update([
-            'processing_status' => 'queued',
-        ]);
-        \App\Models\Movie::query()->findOrFail($movieId)->mediaAsset()->update([
-            'processing_status' => 'queued',
-        ]);
 
         $response = $this->deleteJson("/api/admin/movies/{$movieId}");
 
@@ -370,16 +470,6 @@ class AdminMovieApiTest extends TestCase
         $this->assertDatabaseMissing('movies', [
             'id' => $movieId,
         ]);
-
-        $this->assertSame(
-            0,
-            DB::table('jobs')
-                ->where('queue', 'media-processing')
-                ->where('payload', 'like', '%ProcessMovieMediaAssetJob%')
-                ->where('payload', 'like', '%mediaAssetId%')
-                ->where('payload', 'like', '%' . $mediaAssetId . '%')
-                ->count()
-        );
     }
 
     public function test_admin_can_update_movie_draft_form(): void
@@ -387,8 +477,6 @@ class AdminMovieApiTest extends TestCase
         $admin = $this->createAdminUser();
         $sourcePath = $this->createReadableMediaFile('draft-update-source.mp4');
         $updatedSourcePath = $this->createReadableMediaFile('draft-update-source-2.mp4');
-        $genre = Genre::query()->create(['name' => 'Sci-Fi', 'slug' => 'sci-fi']);
-        $actor = Actor::query()->create(['name' => 'Timothee Chalamet', 'slug' => 'timothee-chalamet']);
 
         Sanctum::actingAs($admin);
 
@@ -407,15 +495,12 @@ class AdminMovieApiTest extends TestCase
             'release_year' => 2024,
             'provider_name' => 'Cinema Provider',
             'source_path' => $updatedSourcePath,
-            'genre_ids' => [$genre->id],
-            'actor_ids' => [$actor->id],
         ]);
 
         $response
             ->assertOk()
             ->assertJsonPath('data.movie.slug', 'draft-display-updated')
-            ->assertJsonPath('data.movie.provider_name', 'Cinema Provider')
-            ->assertJsonPath('data.movie.taxonomies.actors.0.slug', 'timothee-chalamet');
+            ->assertJsonPath('data.movie.provider_name', 'Cinema Provider');
 
         $this->assertDatabaseHas('movies', [
             'id' => $movieId,

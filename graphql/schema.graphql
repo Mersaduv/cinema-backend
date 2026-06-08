@@ -1,0 +1,444 @@
+"Cinema VOD Platform — public GraphQL schema"
+
+type Query {
+  movies(
+    page: Int
+    first: Int = 20
+    genre: String
+    genre_id: String
+    genre_ids: [String!]
+    genres: [String!]
+    country: String
+    language: String
+    country_id: String
+    country_ids: [String!]
+    network_id: String
+    network_ids: [String!]
+    year: Int
+    year_from: Int
+    year_to: Int
+    min_rating: Float
+    max_rating: Float
+    sort_by: String
+    search: String
+  ): [Movie!]! @paginate(builder: "App\\GraphQL\\Builders\\MovieBuilder")
+
+  # Unused — catalog lists use REST. See PublicMovieController@index.
+  """
+  Catalog list — cheap MovieCard rows (columns + one list_meta resolver per row).
+  """
+  moviesList(
+    page: Int
+    first: Int = 20
+    genre: String
+    genre_id: String
+    genre_ids: [String!]
+    genres: [String!]
+    country: String
+    language: String
+    country_id: String
+    country_ids: [String!]
+    network_id: String
+    network_ids: [String!]
+    year: Int
+    year_from: Int
+    year_to: Int
+    min_rating: Float
+    max_rating: Float
+    sort_by: String
+    search: String
+  ): [MovieCard!]! @paginate(builder: "App\\GraphQL\\Builders\\MovieBuilder")
+
+  movie(slug: String! @eq): Movie @find(scopes: ["published"])
+
+  # Unused — catalog lists use REST. See PublicSeriesController@index.
+  """
+  Catalog list — cheap SeriesCard rows only (SQL + metadata).
+  """
+  seriesList(
+    page: Int
+    first: Int = 20
+    genre_id: String
+    genre_ids: [String!]
+    genres: [String!]
+    country: String
+    language: String
+    country_id: String
+    country_ids: [String!]
+    network_id: String
+    network_ids: [String!]
+    year: Int
+    year_from: Int
+    year_to: Int
+    min_rating: Float
+    max_rating: Float
+    sort_by: String
+    search: String
+  ): [SeriesCard!]! @paginate(builder: "App\\GraphQL\\Builders\\SeriesBuilder")
+
+  catalogFilterMeta(kind: String!): CatalogFilterMeta!
+    @field(resolver: "App\\GraphQL\\Queries\\CatalogFilterMetaQuery")
+
+  """
+  Detail page — one resolver builds the full tree (low GraphQL complexity).
+  """
+  seriesOverview(slug: String!): SeriesOverview!
+    @field(resolver: "App\\GraphQL\\Queries\\SeriesOverviewQuery")
+
+  person(slug: String! @eq): Person @find
+
+  watchMovie(slug: String!): MovieWatch!
+    @field(resolver: "App\\GraphQL\\Queries\\WatchMovieQuery")
+
+  watchEpisode(
+    seriesSlug: String!
+    season: Int!
+    episode: Int!
+  ): EpisodeWatch!
+    @field(resolver: "App\\GraphQL\\Queries\\WatchEpisodeQuery")
+}
+
+# ---- Movie ----
+
+type GenreTag {
+  id: ID!
+  slug: String!
+  name: String!
+}
+
+type Movie {
+  id: ID!
+  slug: String!
+  title: String!
+  original_title: String
+  synopsis: String
+  release_year: Int
+  duration_seconds: Int
+  age_rating: String
+  provider_name: String
+  poster_path: String @deprecated(reason: "Use poster_url")
+  poster_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@posterUrl")
+  backdrop_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@backdropUrl")
+  trailer_path: String @deprecated(reason: "Use trailer_url")
+  trailer_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@trailerUrl")
+  has_dubbed_audio: Boolean!
+  has_subtitle: Boolean!
+  publish_status: String!
+  published_at: String
+  tmdb_id: Int
+  genres: [String!]! @field(resolver: "App\\GraphQL\\Types\\Movie@genres")
+  genre_tags: [GenreTag!]! @field(resolver: "App\\GraphQL\\Types\\Movie@genreTags")
+  details: MovieDetailsBlock! @field(resolver: "App\\GraphQL\\Types\\Movie@details")
+  audio_tracks: [AudioTrack!] @field(resolver: "App\\GraphQL\\Types\\Movie@audioTracks")
+  cast: [MovieCast!]! @hasMany(relation: "castMembers")
+  crew: [MovieCrew!]! @hasMany(relation: "crewMembers")
+  metadata: MovieMetadata @field(resolver: "App\\GraphQL\\Types\\Movie@metadataPlayback")
+  cached_avg_rating: Float @field(resolver: "App\\GraphQL\\Resolvers\\ContentReviewsResolver@movieCachedAvgRating")
+  reviews(page: Int, first: Int = 10, sort: ReviewSort = NEWEST): ReviewsPayload!
+    @field(resolver: "App\\GraphQL\\Resolvers\\ContentReviewsResolver@forMovie")
+}
+
+type MovieMetadata {
+  playback: PlaybackMeta
+}
+
+type MovieDetailsBlock {
+  rating: Float
+  original_language: String
+  directors: [String!]!
+  writers: [String!]!
+  genres: [String!]!
+  languages: [String!]!
+  countries: [String!]!
+  network: String
+  runtime_minutes: Int
+  actors: [SeriesActorRow!]!
+  gallery: [String!]!
+}
+
+type PlaybackMeta {
+  hls_url: String
+  downloads: [DownloadLink!]!
+}
+
+type DownloadLink {
+  quality: String!
+  url: String!
+  size_mb: Int
+}
+
+type AudioTrack {
+  name: String!
+  language: String!
+  type: String!
+}
+
+type MovieWatch {
+  hls_url: String!
+  subtitle_url: String
+  dubbed_audio_url: String
+  audio_tracks: [AudioTrack!]!
+  downloads: [DownloadLink!]!
+}
+
+# ---- Movie (catalog card — list only) ----
+
+type MovieCard {
+  id: ID!
+  slug: String!
+  title: String!
+  synopsis: String
+  release_year: Int
+  has_subtitle: Boolean!
+  has_dubbed_audio: Boolean!
+  """One resolver per row — avoids per-field URL/genre complexity on lists."""
+  list_meta: MovieListMeta! @field(resolver: "App\\GraphQL\\Types\\MovieCard@listMeta")
+}
+
+type MovieListMeta {
+  poster_url: String
+  backdrop_url: String
+  genres: [String!]!
+  rating: Float
+}
+
+# ---- Series (catalog card — list only) ----
+
+type SeriesCard {
+  id: ID!
+  slug: String!
+  title: String!
+  synopsis: String
+  release_year: Int
+  poster_url: String
+  backdrop_url: String
+  status: String
+  number_of_seasons: Int
+  number_of_episodes: Int
+  has_subtitle: Boolean!
+  has_dubbed: Boolean!
+  """One resolver per row — avoids 4× complexity on catalog lists."""
+  list_meta: SeriesListMeta! @field(resolver: "App\\GraphQL\\Types\\SeriesCard@listMeta")
+}
+
+type SeriesListMeta {
+  status_label_fa: String
+  genres: [String!]!
+  rating: Float
+  detail_backdrop_url: String
+}
+
+type CatalogFilterMeta {
+  genres: [String!]!
+  countries: [String!]!
+  networks: [String!]!
+  years: [Int!]!
+  show_types: [String!]!
+  min_rating: Float
+  max_rating: Float
+}
+
+# ---- Series (detail overview — pre-built payload) ----
+
+type SeriesOverview {
+  id: ID!
+  slug: String!
+  title: String!
+  original_title: String
+  synopsis: String
+  release_year: Int
+  first_air_date: String
+  last_air_date: String
+  status: String
+  status_label_fa: String
+  episode_runtime_minutes: Int
+  number_of_seasons: Int
+  number_of_episodes: Int
+  network: String
+  provider_name: String
+  genre_tags: [GenreTag!]!
+  poster_url: String
+  backdrop_url: String
+  trailer_url: String
+  age_rating: String
+  has_subtitle: Boolean!
+  has_dubbed: Boolean!
+  total_seasons: Int
+  cast: [SeriesCastRow!]!
+  crew: [SeriesCrewRow!]!
+  seasons: [SeriesSeasonRow!]!
+  details: SeriesDetailsBlock!
+  cached_avg_rating: Float @field(resolver: "App\\GraphQL\\Resolvers\\ContentReviewsResolver@seriesOverviewCachedAvgRating")
+  reviews(page: Int, first: Int = 10, sort: ReviewSort = NEWEST): ReviewsPayload!
+    @field(resolver: "App\\GraphQL\\Resolvers\\ContentReviewsResolver@forSeriesOverview")
+}
+
+type SeriesCastRow {
+  name: String
+  slug: String
+  character_name: String
+  profile_url: String
+  order: Int
+}
+
+type SeriesCrewRow {
+  name: String
+  slug: String
+  job: String
+  department: String
+  profile_url: String
+}
+
+type SeriesSeasonRow {
+  id: ID!
+  season_number: Int!
+  title: String
+}
+
+type SeriesDetailsBlock {
+  backdrop_url: String
+  rating: Float
+  original_language: String
+  creators: [String!]!
+  directors: [String!]!
+  writers: [String!]!
+  genres: [String!]!
+  languages: [String!]!
+  countries: [String!]!
+  network: String
+  actors: [SeriesActorRow!]!
+  gallery: [String!]!
+}
+
+type SeriesActorRow {
+  name: String
+  character: String
+  profile_url: String
+}
+
+# ---- Watch / seasons (internal models) ----
+
+type SeriesSeason {
+  id: ID!
+  season_number: Int!
+  title: String @rename(attribute: "name")
+  episodes: [SeriesEpisode!]! @hasMany
+}
+
+type SeriesEpisode {
+  id: ID!
+  episode_number: Int!
+  title: String
+  synopsis: String
+  hls_url: String
+  subtitle_url: String
+  dubbed_audio_url: String
+  duration_seconds: Int @field(resolver: "App\\GraphQL\\Types\\SeriesEpisode@durationSeconds")
+  publish_status: String!
+}
+
+type EpisodeWatch {
+  hls_url: String!
+  subtitle_url: String
+  dubbed_audio_url: String
+  episode: SeriesEpisode!
+  series: SeriesSummary!
+  next_episode: SeriesEpisode
+  prev_episode: SeriesEpisode
+}
+
+type SeriesSummary {
+  id: ID!
+  slug: String!
+  title: String!
+  poster_url: String
+  publish_status: String!
+  show_type: String
+}
+
+# ---- Person / cast ----
+
+type Person {
+  id: ID!
+  slug: String!
+  name: String!
+  biography: String
+  profile_url: String @field(resolver: "App\\GraphQL\\Types\\Person@profileUrl")
+  known_for_department: String
+}
+
+type MovieCast {
+  person: Person! @belongsTo
+  character_name: String
+  order: Int @rename(attribute: "cast_order")
+}
+
+type MovieCrew {
+  person: Person! @belongsTo
+  job: String!
+  department: String
+}
+
+# ---- Reviews ----
+
+type PublicUser {
+  id: ID!
+  name: String!
+  avatar_url: String
+}
+
+type Review {
+  id: ID!
+  user: PublicUser!
+  rating: Int!
+  body: String
+  created_at: String!
+  is_own: Boolean!
+}
+
+type ReviewDistributionBucket {
+  rating: Int!
+  count: Int!
+}
+
+type ReviewSummary {
+  total_count: Int!
+  average_rating: Float!
+  distribution: [ReviewDistributionBucket!]!
+}
+
+type PaginatorInfo {
+  currentPage: Int!
+  lastPage: Int!
+  total: Int!
+}
+
+type ReviewsPayload {
+  reviews: [Review!]!
+  summary: ReviewSummary!
+  user_review: Review
+  paginatorInfo: PaginatorInfo!
+}
+
+enum ReviewSort {
+  NEWEST
+  OLDEST
+  TOP_RATED
+}
+
+type Mutation {
+  submitReview(
+    slug: String!
+    reviewable_type: String!
+    rating: Int!
+    body: String
+  ): Review! @field(resolver: "App\\GraphQL\\Mutations\\ReviewMutations@submitReview") @guard
+
+  updateReview(id: ID!, rating: Int, body: String): Review!
+    @field(resolver: "App\\GraphQL\\Mutations\\ReviewMutations@updateReview")
+    @guard
+
+  deleteReview(id: ID!): Boolean!
+    @field(resolver: "App\\GraphQL\\Mutations\\ReviewMutations@deleteReview")
+    @guard
+}

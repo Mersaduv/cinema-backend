@@ -183,23 +183,12 @@ class MovieDraftUpdateService
                 });
             }
 
-            $movie->genres()->sync($payload['genre_ids'] ?? $movie->genres()->pluck('genres.id')->all());
-            $movie->countries()->sync($payload['country_ids'] ?? $movie->countries()->pluck('countries.id')->all());
-            $movie->languages()->sync($payload['language_ids'] ?? $movie->languages()->pluck('languages.id')->all());
-            $movie->tags()->sync($payload['tag_ids'] ?? $movie->tags()->pluck('tags.id')->all());
-            $movie->actors()->sync($payload['actor_ids'] ?? $movie->actors()->pluck('actors.id')->all());
-
             File::ensureDirectoryExists($newAssetsDirectory);
 
             return $movie->fresh([
                 'mediaAsset.variants',
                 'mediaAsset.processingRuns',
                 'creator',
-                'genres',
-                'countries',
-                'languages',
-                'tags',
-                'actors',
             ]);
         });
     }
@@ -330,15 +319,6 @@ class MovieDraftUpdateService
             return collect($payload['actor_names'] ?? [])
                 ->map(fn ($item) => trim((string) $item))
                 ->filter()
-                ->values()
-                ->all();
-        }
-
-        if (array_key_exists('actor_ids', $payload)) {
-            return \App\Models\Actor::query()
-                ->whereIn('id', $payload['actor_ids'] ?? [])
-                ->orderBy('name')
-                ->pluck('name')
                 ->values()
                 ->all();
         }

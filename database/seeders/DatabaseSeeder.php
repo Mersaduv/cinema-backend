@@ -6,7 +6,9 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Hash;
+use Throwable;
 
 class DatabaseSeeder extends Seeder
 {
@@ -18,8 +20,6 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->call(RolePermissionSeeder::class);
-        $this->call(TaxonomySeeder::class);
-
         $adminUser = User::updateOrCreate([
             'email' => 'admin@cinema.local',
         ], [
@@ -32,6 +32,13 @@ class DatabaseSeeder extends Seeder
 
         if ($adminRole) {
             $adminUser->roles()->sync([$adminRole->id]);
+        }
+
+        try {
+            Artisan::call('cinema:sync-tmdb-reference-data', ['--force' => true]);
+        } catch (Throwable) {
+            $this->call(TmdbReferenceFallbackSeeder::class);
+            $this->call(TmdbCountryFallbackSeeder::class);
         }
     }
 }

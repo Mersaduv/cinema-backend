@@ -10,7 +10,6 @@ class MovieCleanupService
 {
     public function __construct(
         private readonly MediaPathService $mediaPathService,
-        private readonly HlsTranscodingService $hlsTranscodingService,
     ) {
     }
 
@@ -24,20 +23,10 @@ class MovieCleanupService
             ? $this->mediaPathService->toAbsolutePath($managedRelativeDirectory)
             : null;
 
-        if ($mediaAsset) {
-            $this->hlsTranscodingService->dispose($mediaAsset);
-        }
-
         DB::transaction(function () use ($movie, $mediaAsset) {
             if ($mediaAsset) {
                 $mediaAsset->delete();
             }
-
-            $movie->genres()->detach();
-            $movie->countries()->detach();
-            $movie->languages()->detach();
-            $movie->tags()->detach();
-            $movie->actors()->detach();
 
             $movie->delete();
         });
