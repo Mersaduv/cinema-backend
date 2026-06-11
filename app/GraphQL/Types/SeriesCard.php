@@ -13,15 +13,10 @@ final class SeriesCard
     ) {}
 
     /**
-     * @return array{status_label_fa: ?string, genres: list<string>, rating: mixed, detail_backdrop_url: ?string}
+     * @return array<string, mixed>
      */
     public function listMeta(SeriesModel $series): array
     {
-        return [
-            'status_label_fa' => $this->presenter->statusLabelFa($series->status),
-            'genres' => $this->presenter->genres($series),
-            'rating' => $this->presenter->rating($series),
-            'detail_backdrop_url' => $this->presenter->detailBackdropUrl($series),
-        ];
+        return $this->presenter->listMeta($series);
     }
 }

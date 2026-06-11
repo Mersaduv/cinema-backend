@@ -13,6 +13,7 @@ use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogFilterQuery;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\GenreCatalogService;
+use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\RelatedContentService;
 use App\Services\Cinema\SeriesHlsPathService;
 use App\Services\TmdbService;
@@ -34,6 +35,7 @@ class PublicSeriesController extends Controller
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
         private readonly RelatedContentService $relatedContentService,
+        private readonly ImagePresentationService $imagePresentationService,
     ) {
     }
 
@@ -180,6 +182,8 @@ class PublicSeriesController extends Controller
     private function transformSeriesListItem(Series $series): array
     {
         $metadata = is_array($series->metadata) ? $series->metadata : [];
+        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
+        $backdropImage = $this->imagePresentationService->seriesBackdropImage($metadata);
 
         $rating = CatalogListPresentation::listRating(
             $series->filter_rating !== null ? (float) $series->filter_rating : null,
@@ -195,8 +199,14 @@ class PublicSeriesController extends Controller
             'release_year' => $series->release_year,
             'status' => $series->status,
             'status_label_fa' => $this->translateProductionStatus($series->status),
-            'poster_url' => $series->poster_url,
-            'backdrop_url' => $series->backdrop_url,
+            'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
+            'backdrop_url' => $this->imagePresentationService->resolveSeriesBackdropUrl($series->backdrop_url, $metadata),
+            'backdrop_blur_url' => data_get($backdropImage, 'blur'),
+            'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
+            'backdrop_image' => $backdropImage,
             'network' => $series->network,
             'number_of_seasons' => $series->number_of_seasons,
             'number_of_episodes' => $series->number_of_episodes,
@@ -231,6 +241,8 @@ class PublicSeriesController extends Controller
         $metadata = is_array($series->metadata) ? $series->metadata : [];
         $seriesHlsBase = data_get($metadata, 'playback.hls_base_url');
         $normalizedGenres = $this->genreCatalogService->serializeGenres($series->genres);
+        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
+        $backdropImage = $this->imagePresentationService->seriesBackdropImage($metadata);
 
         return [
             'id' => $series->id,
@@ -252,8 +264,14 @@ class PublicSeriesController extends Controller
             'number_of_episodes' => $series->number_of_episodes,
             'network' => $series->network,
             'provider_name' => $series->provider_name,
-            'poster_url' => $series->poster_url,
-            'backdrop_url' => $series->backdrop_url,
+            'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
+            'backdrop_url' => $this->imagePresentationService->resolveSeriesBackdropUrl($series->backdrop_url, $metadata),
+            'backdrop_blur_url' => data_get($backdropImage, 'blur'),
+            'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
+            'backdrop_image' => $backdropImage,
             'trailer_url' => $series->trailer_url,
             'age_rating' => $series->age_rating,
             'genres' => $normalizedGenres,
@@ -271,7 +289,20 @@ class PublicSeriesController extends Controller
                     'name' => $row->person?->name,
                     'slug' => $row->person?->slug,
                     'character' => $row->character_name,
-                    'profile_url' => $row->person?->getProfileImageUrl(),
+                    'profile_url' => $row->person
+                        ? $this->imagePresentationService->resolvePersonProfileUrl($row->person)
+                        : null,
+                    'profile_blur_url' => data_get(
+                        $row->person ? $this->imagePresentationService->personProfileImage($row->person) : null,
+                        'blur',
+                    ),
+                    'profile_srcset' => data_get(
+                        $row->person ? $this->imagePresentationService->personProfileImage($row->person) : null,
+                        'srcset_string',
+                    ),
+                    'profile_image' => $row->person
+                        ? $this->imagePresentationService->personProfileImage($row->person)
+                        : null,
                     'order' => $row->cast_order,
                 ])
                 ->all(),
@@ -282,7 +313,20 @@ class PublicSeriesController extends Controller
                     'slug' => $row->person?->slug,
                     'job' => $row->job,
                     'department' => $row->department,
-                    'profile_url' => $row->person?->getProfileImageUrl(),
+                    'profile_url' => $row->person
+                        ? $this->imagePresentationService->resolvePersonProfileUrl($row->person)
+                        : null,
+                    'profile_blur_url' => data_get(
+                        $row->person ? $this->imagePresentationService->personProfileImage($row->person) : null,
+                        'blur',
+                    ),
+                    'profile_srcset' => data_get(
+                        $row->person ? $this->imagePresentationService->personProfileImage($row->person) : null,
+                        'srcset_string',
+                    ),
+                    'profile_image' => $row->person
+                        ? $this->imagePresentationService->personProfileImage($row->person)
+                        : null,
                 ])
                 ->values()
                 ->all(),
@@ -327,6 +371,10 @@ class PublicSeriesController extends Controller
     {
         $seasonMetadata = is_array($season->metadata) ? $season->metadata : [];
         $seasonHlsBase = data_get($seasonMetadata, 'playback.hls_base_url');
+        $posterFields = $this->imagePresentationService->enrichListImageFields(
+            $season->poster_url,
+            data_get($seasonMetadata, 'images.poster'),
+        );
 
         return [
             'id' => $season->id,
@@ -335,7 +383,10 @@ class PublicSeriesController extends Controller
             'synopsis' => $season->synopsis,
             'air_date' => $season->air_date?->toDateString(),
             'episode_count' => $season->episode_count,
-            'poster_url' => $season->poster_url,
+            'poster_url' => $posterFields['url'],
+            'poster_blur_url' => $posterFields['blur_url'],
+            'poster_srcset' => $posterFields['srcset'],
+            'poster_image' => $posterFields['image'],
             'episodes' => $season->episodes
                 ->filter(fn (SeriesEpisode $episode) => $this->episodeIsPubliclyPlayable(
                     $episode,
@@ -367,6 +418,10 @@ class PublicSeriesController extends Controller
 
         $hlsUrl = $resolved['hls_url'] ?? null;
         $episodeMetadata = is_array($episode->metadata) ? $episode->metadata : [];
+        $stillFields = $this->imagePresentationService->enrichListImageFields(
+            $episode->still_url,
+            data_get($episodeMetadata, 'images.still'),
+        );
 
         return [
             'id' => $episode->id,
@@ -377,7 +432,10 @@ class PublicSeriesController extends Controller
             'synopsis' => $episode->synopsis,
             'air_date' => $episode->air_date?->toDateString(),
             'duration_minutes' => $episode->duration_minutes,
-            'still_url' => $episode->still_url,
+            'still_url' => $stillFields['url'],
+            'still_blur_url' => $stillFields['blur_url'],
+            'still_srcset' => $stillFields['srcset'],
+            'still_image' => $stillFields['image'],
             'hls_url' => $hlsUrl,
             'download_links' => $this->resolveEpisodeDownloadLinks($episode),
             'subtitle_url' => $episode->subtitle_url,

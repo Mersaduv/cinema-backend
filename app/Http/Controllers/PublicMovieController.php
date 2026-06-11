@@ -9,6 +9,7 @@ use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogFilterQuery;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\GenreCatalogService;
+use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\MediaPathService;
 use App\Services\Cinema\RelatedContentService;
 use App\Services\TmdbService;
@@ -28,6 +29,7 @@ class PublicMovieController extends Controller
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
         private readonly RelatedContentService $relatedContentService,
+        private readonly ImagePresentationService $imagePresentationService,
     ) {
     }
 
@@ -196,11 +198,20 @@ class PublicMovieController extends Controller
             'countries' => data_get($metadata, 'tmdb.countries', []),
             'actors' => collect(data_get($metadata, 'tmdb.actors', []))
                 ->filter(fn ($actor) => is_array($actor))
-                ->map(fn (array $actor) => [
-                    'name' => $actor['name'] ?? null,
-                    'character' => $actor['character'] ?? null,
-                    'profile_url' => $actor['profile_url'] ?? null,
-                ])
+                ->map(function (array $actor) {
+                    $profileImage = is_array($actor['profile_image'] ?? null)
+                        ? $actor['profile_image']
+                        : null;
+                    $profileUrl = data_get($profileImage, 'original')
+                        ?: ($actor['profile_url'] ?? null);
+
+                    return [
+                        'name' => $actor['name'] ?? null,
+                        'character' => $actor['character'] ?? null,
+                        'profile_url' => $profileUrl,
+                        'profile_image' => $profileImage,
+                    ];
+                })
                 ->values()
                 ->all(),
             'gallery' => $this->buildGalleryItems($movie, $metadata),
@@ -238,26 +249,59 @@ class PublicMovieController extends Controller
                 ? $movie->castMembers
                     ->sortBy('cast_order')
                     ->values()
-                    ->map(fn ($row) => [
-                        'person_id' => $row->person_id,
-                        'name' => $row->person?->name,
-                        'slug' => $row->person?->slug,
-                        'character' => $row->character_name,
-                        'profile_url' => $row->person?->getProfileImageUrl(),
-                    ])
+                    ->map(function ($row) use ($metadata) {
+                        $person = $row->person;
+                        $profileImage = $person
+                            ? $this->imagePresentationService->personProfileImage($person)
+                            : null;
+                        $metadataActor = collect(data_get($metadata, 'tmdb.actors', []))
+                            ->first(fn ($actor) => is_array($actor)
+                                && filled($actor['name'] ?? null)
+                                && $person
+                                && trim((string) $actor['name']) === trim((string) $person->name));
+                        $metadataProfileImage = is_array($metadataActor['profile_image'] ?? null)
+                            ? $metadataActor['profile_image']
+                            : null;
+
+                        $resolvedProfileUrl = data_get($metadataProfileImage, 'original')
+                            ?: (is_array($metadataActor) ? ($metadataActor['profile_url'] ?? null) : null)
+                            ?: data_get($profileImage, 'original')
+                            ?: ($person
+                                ? $this->imagePresentationService->resolvePersonProfileUrl($person)
+                                : null);
+
+                        return [
+                            'person_id' => $row->person_id,
+                            'name' => $person?->name,
+                            'slug' => $person?->slug,
+                            'character' => $row->character_name,
+                            'profile_url' => $resolvedProfileUrl,
+                            'profile_image' => $metadataProfileImage ?? $profileImage,
+                        ];
+                    })
                     ->values()
                     ->all()
                 : [],
             'crew' => $movie->relationLoaded('crewMembers')
                 ? $movie->crewMembers
-                    ->map(fn ($row) => [
-                        'person_id' => $row->person_id,
-                        'name' => $row->person?->name,
-                        'slug' => $row->person?->slug,
-                        'job' => $row->job,
-                        'department' => $row->department,
-                        'profile_url' => $row->person?->getProfileImageUrl(),
-                    ])
+                    ->map(function ($row) {
+                        $person = $row->person;
+                        $profileImage = $person
+                            ? $this->imagePresentationService->personProfileImage($person)
+                            : null;
+
+                        return [
+                            'person_id' => $row->person_id,
+                            'name' => $person?->name,
+                            'slug' => $person?->slug,
+                            'job' => $row->job,
+                            'department' => $row->department,
+                            'profile_url' => $person
+                                ? $this->imagePresentationService->resolvePersonProfileUrl($person)
+                                : null,
+                            'profile_image' => $profileImage,
+                        ];
+                    })
                     ->values()
                     ->all()
                 : [],

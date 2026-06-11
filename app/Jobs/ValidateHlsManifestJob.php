@@ -2,121 +2,137 @@
 
 namespace App\Jobs;
 
+use App\Jobs\Concerns\PipelineAwareJob;
 use App\Models\Movie;
 use App\Services\Cinema\HlsPackageInsightService;
-use App\Services\Cinema\MediaPathService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\Log;
 
 class ValidateHlsManifestJob implements ShouldQueue
 {
+    use PipelineAwareJob;
     use Queueable;
+
+    public int $tries = 3;
+
+    protected string $taskKey = 'hls_validate';
 
     public function __construct(
         public readonly int $movieId,
-        public readonly string $hlsUrlRaw,
+        public readonly ?string $hlsUrlRaw = null,
         public readonly ?string $subtitleSourcePath = null,
+        public readonly ?int $pipelineId = null,
     ) {
-        $this->onQueue('default');
     }
 
-    public function handle(
-        HlsPackageInsightService $hlsPackageInsightService,
-        MediaPathService $mediaPathService,
-    ): void {
-        $movie = Movie::query()->with('mediaAsset')->find($this->movieId);
+    public function handle(HlsPackageInsightService $hlsPackageInsightService): void
+    {
+        $this->pipelineStart();
 
-        if ($movie === null) {
-            return;
-        }
+        try {
+            $movie = Movie::query()->findOrFail($this->movieId);
+            $raw = filled($this->hlsUrlRaw)
+                ? trim((string) $this->hlsUrlRaw)
+                : (string) data_get($movie->metadata, 'playback.hls_url', '');
+            $canonical = $hlsPackageInsightService->normalizeHlsPackageMasterUrl($raw);
 
-        $canonicalHlsUrl = $hlsPackageInsightService->normalizeHlsPackageMasterUrl($this->hlsUrlRaw);
-        $probe = $hlsPackageInsightService->probeHlsMasterUrl($this->hlsUrlRaw);
+            if (! filled($canonical)) {
+                $this->markFailed($movie, 'Invalid HLS URL.');
 
-        if (! filled($canonicalHlsUrl) || ! ($probe['ok'] ?? false)) {
-            $error = (string) ($probe['error'] ?? 'The HLS master playlist could not be reached.');
+                return;
+            }
+
+            $manifest = $hlsPackageInsightService->loadHlsContent($canonical);
+
+            if (! filled($manifest) || stripos((string) $manifest, '#EXTM3U') === false) {
+                $this->markFailed($movie, 'Could not read master.m3u8 from this URL or path.');
+
+                return;
+            }
 
             $movie->update([
-                'processing_status' => 'failed',
-                'processing_error' => $error,
+                'processing_status' => 'ready',
+                'processing_error' => null,
             ]);
 
             if ($movie->mediaAsset) {
                 $movie->mediaAsset->update([
-                    'processing_status' => 'failed',
-                    'processing_error' => $error,
+                    'processing_status' => 'ready',
+                    'processing_progress_percent' => 100,
+                    'processing_error' => null,
+                    'last_processed_at' => now(),
                 ]);
             }
 
-            return;
+            $insights = $hlsPackageInsightService->extractPlaybackInsights(
+                $canonical,
+                (string) $manifest,
+                verifyRemoteDownloadTargets: true,
+            );
+
+            $this->applyPlaybackInsights($movie, $insights);
+
+            $this->pipelineComplete(['manifest_url' => $canonical]);
+        } catch (\Throwable $exception) {
+            $this->pipelineFail($exception->getMessage());
+            throw $exception;
         }
-
-        $existingMetadata = is_array($movie->metadata) ? $movie->metadata : [];
-        $metadataWithHls = array_replace_recursive($existingMetadata, [
-            'playback' => array_replace(
-                is_array($existingMetadata['playback'] ?? null) ? $existingMetadata['playback'] : [],
-                [
-                    'hls_url' => $canonicalHlsUrl,
-                ],
-            ),
-        ]);
-
-        $movie->update([
-            'processing_status' => 'ready',
-            'processing_error' => null,
-            'metadata' => $metadataWithHls,
-        ]);
-
-        $resolvedSourcePath = $movie->mediaAsset?->source_path;
-        $masterPath = (string) $canonicalHlsUrl;
-
-        if ($movie->mediaAsset) {
-            $movie->mediaAsset->update([
-                'source_path' => $resolvedSourcePath ?: $movie->mediaAsset->source_path,
-                'source_is_external' => $this->isPublicationSourceExternal($resolvedSourcePath ?: $movie->mediaAsset->source_path),
-                'master_playlist_relative_path' => $masterPath,
-                'processing_status' => 'ready',
-                'processing_progress_percent' => 100,
-                'processing_eta_seconds' => null,
-                'current_profile_key' => null,
-                'processing_error' => null,
-                'last_processed_at' => now(),
-                'selected_hls_profiles' => [],
-            ]);
-        } elseif ($resolvedSourcePath) {
-            $movie->mediaAsset()->create([
-                'kind' => 'video',
-                'source_path' => $resolvedSourcePath,
-                'source_is_external' => $this->isPublicationSourceExternal($resolvedSourcePath),
-                'managed_relative_directory' => $movie->media_folder,
-                'hls_output_relative_directory' => $mediaPathService->hlsRelativeDirectory($movie->slug),
-                'master_playlist_relative_path' => $masterPath,
-                'selected_hls_profiles' => [],
-                'processing_status' => 'ready',
-                'processing_progress_percent' => 100,
-                'processing_eta_seconds' => null,
-                'current_profile_key' => null,
-                'processing_error' => null,
-                'last_processed_at' => now(),
-            ]);
-        }
-
-        EnrichHlsPlaybackMetadataJob::dispatch($movie->id, $this->subtitleSourcePath)->onQueue('low');
-
-        Log::info('ValidateHlsManifestJob: HLS URL verified via quick probe', [
-            'movie_id' => $movie->id,
-            'hls_url' => $canonicalHlsUrl,
-            'http_status' => $probe['status'] ?? null,
-        ]);
     }
 
-    private function isPublicationSourceExternal(?string $path): bool
+    public function failed(\Throwable $exception): void
     {
-        if (! filled($path)) {
-            return false;
+        $movie = Movie::query()->find($this->movieId);
+
+        if ($movie) {
+            $movie->update([
+                'processing_status' => 'failed',
+                'processing_error' => $exception->getMessage(),
+            ]);
         }
 
-        return preg_match('#^https?://#i', (string) $path) === 1;
+        $this->pipelineFail('HLS validation permanently failed: ' . $exception->getMessage());
+    }
+
+    /**
+     * @param  array<string, mixed>  $insights
+     */
+    private function applyPlaybackInsights(Movie $movie, array $insights): void
+    {
+        $updates = [];
+
+        $subtitlePath = filled($this->subtitleSourcePath)
+            ? trim((string) $this->subtitleSourcePath)
+            : ($insights['subtitle_source_path'] ?? null);
+
+        if (filled($subtitlePath)) {
+            $updates['subtitle_source_path'] = $subtitlePath;
+            $updates['has_subtitle'] = true;
+        } elseif ($insights['has_subtitle'] ?? false) {
+            $updates['has_subtitle'] = true;
+            $updates['subtitle_source_path'] = $insights['subtitle_source_path'] ?? null;
+        }
+
+        if ($insights['has_dubbed_audio'] ?? false) {
+            $updates['has_dubbed_audio'] = true;
+            $updates['dubbed_source_path'] = $insights['dubbed_source_path'] ?? null;
+        }
+
+        if (! empty($insights['audio_tracks'])) {
+            $updates['audio_tracks'] = $insights['audio_tracks'];
+        }
+
+        if ($updates !== []) {
+            $movie->update($updates);
+        }
+    }
+
+    private function markFailed(Movie $movie, string $message): void
+    {
+        $movie->update([
+            'processing_status' => 'failed',
+            'processing_error' => $message,
+        ]);
+
+        $this->pipelineFail('HLS manifest validation failed: ' . $message);
     }
 }

@@ -9,6 +9,7 @@ use App\Models\Person;
 use App\Models\Series;
 use App\Models\SeriesCast;
 use App\Models\SeriesCrew;
+use App\Jobs\ProcessPersonImagesJob;
 use App\Services\TmdbService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +28,7 @@ class PersonIngestionService
 
     public function __construct(
         private readonly TmdbService $tmdbService,
+        private readonly ContentImageIngestionService $contentImageIngestionService,
     ) {
     }
 
@@ -55,21 +57,22 @@ class PersonIngestionService
         }
 
         if ($existing) {
-            $updates = [];
+            $updates = $this->buildPersonProfileUpdatesFromPayload($existing, $tmdbPersonData);
+
             if (isset($tmdbPersonData['popularity'])) {
                 $updates['popularity'] = round((float) $tmdbPersonData['popularity'], 3);
             }
-            $path = isset($tmdbPersonData['profile_path']) ? (string) $tmdbPersonData['profile_path'] : null;
-            if ($path !== null && $path !== '' && $path !== $existing->profile_path_tmdb) {
-                $updates['profile_path_tmdb'] = $path;
-                $updates['profile_url'] = $this->tmdbProfileUrl($path);
-            }
+
             if ($updates !== []) {
                 $existing->update($updates);
             }
 
             $existing = $existing->fresh();
             $this->markPersonForBioEnrich($existing);
+            $this->queueProfileImageIngestIfNeeded(
+                $existing,
+                $updates['profile_url'] ?? $existing->profile_url,
+            );
 
             return $existing;
         }
@@ -84,14 +87,22 @@ class PersonIngestionService
         $slug = $this->allocateUniqueSlug(Str::slug($resolvedName) ?: 'person');
 
         $profilePath = isset($api['profile_path']) ? (string) $api['profile_path'] : (isset($tmdbPersonData['profile_path']) ? (string) $tmdbPersonData['profile_path'] : null);
-        $profileUrl = $profilePath ? $this->tmdbProfileUrl($profilePath) : null;
-        if (!$profileUrl && !empty($tmdbPersonData['profile_url'])) {
-            $profileUrl = (string) $tmdbPersonData['profile_url'];
-        }
+        $profileUrl = $this->resolveProfileUrlFromPayload($tmdbPersonData, $profilePath);
 
         $imdb = $api['external_ids']['imdb_id'] ?? $api['imdb_id'] ?? null;
 
-        return Person::query()->create([
+        $metadata = [
+            'also_known_as' => $api['also_known_as'] ?? [],
+            'homepage' => $api['homepage'] ?? null,
+            'external_ids' => $api['external_ids'] ?? [],
+        ];
+        $profileImage = $tmdbPersonData['profile_image'] ?? null;
+
+        if (is_array($profileImage) && filled($profileImage['original'] ?? null)) {
+            $metadata['images']['profile'] = $profileImage;
+        }
+
+        $person = Person::query()->create([
             'tmdb_person_id' => $tmdbId,
             'imdb_id' => filled($imdb) ? (string) $imdb : null,
             'name' => $resolvedName,
@@ -105,12 +116,12 @@ class PersonIngestionService
             'popularity' => isset($api['popularity']) ? round((float) $api['popularity'], 3) : (isset($tmdbPersonData['popularity']) ? round((float) $tmdbPersonData['popularity'], 3) : null),
             'profile_path_tmdb' => $profilePath,
             'profile_url' => $profileUrl,
-            'metadata' => [
-                'also_known_as' => $api['also_known_as'] ?? [],
-                'homepage' => $api['homepage'] ?? null,
-                'external_ids' => $api['external_ids'] ?? [],
-            ],
+            'metadata' => $metadata,
         ]);
+
+        $this->queueProfileImageIngestIfNeeded($person, $profileUrl);
+
+        return $person;
     }
 
     public function enrichPersonProfileFromTmdbIfNeeded(Person $person): Person
@@ -184,8 +195,27 @@ class PersonIngestionService
         ]);
 
         if (filled($api['biography'] ?? null) && filled($person->slug)) {
-            Cache::forget('person.public.v2.' . $person->slug);
+            Cache::forget('person.public.v3.' . $person->slug);
         }
+
+        $this->queueProfileImageIngestIfNeeded($person->fresh(), $profileUrl);
+    }
+
+    private function queueProfileImageIngestIfNeeded(Person $person, ?string $sourceUrl = null): void
+    {
+        $metadata = is_array($person->metadata) ? $person->metadata : [];
+
+        if (filled(data_get($metadata, 'images.profile.original'))) {
+            return;
+        }
+
+        $source = $sourceUrl ?: $person->profile_url;
+
+        if (! filled($source)) {
+            return;
+        }
+
+        ProcessPersonImagesJob::dispatch($person->id, $source)->afterResponse();
     }
 
     private function markPersonForBioEnrich(Person $person): void
@@ -459,9 +489,15 @@ class PersonIngestionService
     private function upsertManualPersonFromCastData(array $tmdbPersonData, string $name): Person
     {
         $slug = $this->allocateUniqueSlug(Str::slug($name) ?: 'person');
-        $profileUrl = $this->nullableString($tmdbPersonData['profile_url'] ?? null);
+        $profileUrl = $this->resolveProfileUrlFromPayload($tmdbPersonData, null);
+        $metadata = ['manual' => true];
+        $profileImage = $tmdbPersonData['profile_image'] ?? null;
 
-        return Person::query()->create([
+        if (is_array($profileImage) && filled($profileImage['original'] ?? null)) {
+            $metadata['images']['profile'] = $profileImage;
+        }
+
+        $person = Person::query()->create([
             'tmdb_person_id' => null,
             'imdb_id' => null,
             'name' => $name,
@@ -475,8 +511,12 @@ class PersonIngestionService
             'popularity' => null,
             'profile_path_tmdb' => null,
             'profile_url' => $profileUrl,
-            'metadata' => ['manual' => true],
+            'metadata' => $metadata,
         ]);
+
+        $this->queueProfileImageIngestIfNeeded($person, $profileUrl);
+
+        return $person;
     }
 
     private function allocateUniqueSlug(string $base): string
@@ -498,6 +538,85 @@ class PersonIngestionService
     }
 
     /**
+     * @param  array<string, mixed>  $tmdbPersonData
+     * @return array<string, mixed>
+     */
+    private function buildPersonProfileUpdatesFromPayload(Person $person, array $tmdbPersonData): array
+    {
+        $updates = [];
+        $managedProfileUrl = $this->managedProfileUrlFromPayload($tmdbPersonData);
+
+        if ($managedProfileUrl !== null) {
+            $updates['profile_url'] = $managedProfileUrl;
+
+            $profileImage = $tmdbPersonData['profile_image'] ?? null;
+
+            if (is_array($profileImage) && filled($profileImage['original'] ?? null)) {
+                $metadata = is_array($person->metadata) ? $person->metadata : [];
+                $metadata['images']['profile'] = $profileImage;
+                $updates['metadata'] = $metadata;
+            }
+
+            return $updates;
+        }
+
+        $path = isset($tmdbPersonData['profile_path']) ? (string) $tmdbPersonData['profile_path'] : null;
+
+        if ($path !== null && $path !== '' && $path !== $person->profile_path_tmdb) {
+            $updates['profile_path_tmdb'] = $path;
+            $updates['profile_url'] = $this->tmdbProfileUrl($path);
+        }
+
+        return $updates;
+    }
+
+    /**
+     * @param  array<string, mixed>  $tmdbPersonData
+     */
+    private function resolveProfileUrlFromPayload(array $tmdbPersonData, ?string $profilePath): ?string
+    {
+        $managedProfileUrl = $this->managedProfileUrlFromPayload($tmdbPersonData);
+
+        if ($managedProfileUrl !== null) {
+            return $managedProfileUrl;
+        }
+
+        if (filled($profilePath)) {
+            return $this->tmdbProfileUrl((string) $profilePath);
+        }
+
+        return $this->nullableString($tmdbPersonData['profile_url'] ?? null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $tmdbPersonData
+     */
+    private function managedProfileUrlFromPayload(array $tmdbPersonData): ?string
+    {
+        $profileUrl = $this->nullableString($tmdbPersonData['profile_url'] ?? null);
+
+        if ($profileUrl !== null && $this->isManagedPublicImageUrl($profileUrl)) {
+            return $profileUrl;
+        }
+
+        $profileImage = $tmdbPersonData['profile_image'] ?? null;
+        $original = is_array($profileImage) ? $this->nullableString($profileImage['original'] ?? null) : null;
+
+        if ($original !== null && $this->isManagedPublicImageUrl($original)) {
+            return $original;
+        }
+
+        return null;
+    }
+
+    private function isManagedPublicImageUrl(string $url): bool
+    {
+        $prefix = '/' . trim((string) config('cinema_images.public_prefix', '/images'), '/');
+
+        return str_starts_with($url, $prefix . '/') || $url === $prefix;
+    }
+
+    /**
      * @param  array<string, mixed>  $item
      */
     private function normalizeIncomingCastRow(array $item, ?string $characterOverride = null): array
@@ -511,6 +630,8 @@ class PersonIngestionService
             'character' => $character,
             'profile_path' => $item['profile_path'] ?? null,
             'profile_url' => $item['profile_url'] ?? null,
+            'profile_image' => is_array($item['profile_image'] ?? null) ? $item['profile_image'] : null,
+            'profile_source_url' => $item['profile_source_url'] ?? null,
             'credit_id' => $item['credit_id'] ?? null,
             'order' => $item['order'] ?? 0,
             'known_for_department' => $item['known_for_department'] ?? 'Acting',
@@ -634,8 +755,13 @@ class PersonIngestionService
         $resolvedName = trim((string) ($tmdbPersonData['name'] ?? '')) ?: $name;
         $slug = $this->allocateUniqueSlug(Str::slug($resolvedName) ?: 'person');
         $profilePath = $this->nullableString($tmdbPersonData['profile_path'] ?? null);
-        $profileUrl = $this->nullableString($tmdbPersonData['profile_url'] ?? null)
-            ?? ($profilePath ? $this->tmdbProfileUrl($profilePath) : null);
+        $profileUrl = $this->resolveProfileUrlFromPayload($tmdbPersonData, $profilePath);
+        $metadata = ['ingested_from' => 'series_payload'];
+        $profileImage = $tmdbPersonData['profile_image'] ?? null;
+
+        if (is_array($profileImage) && filled($profileImage['original'] ?? null)) {
+            $metadata['images']['profile'] = $profileImage;
+        }
 
         $person = Person::query()->create([
             'tmdb_person_id' => $tmdbId,
@@ -651,10 +777,11 @@ class PersonIngestionService
             'popularity' => isset($tmdbPersonData['popularity']) ? round((float) $tmdbPersonData['popularity'], 3) : null,
             'profile_path_tmdb' => $profilePath,
             'profile_url' => $profileUrl,
-            'metadata' => ['ingested_from' => 'series_payload'],
+            'metadata' => $metadata,
         ]);
 
         $this->markPersonForBioEnrich($person);
+        $this->queueProfileImageIngestIfNeeded($person, $profileUrl);
 
         return $person;
     }

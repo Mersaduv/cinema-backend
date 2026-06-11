@@ -10,6 +10,7 @@ class ProductionCountry extends Model
         'iso_3166_1',
         'name',
         'native_name',
+        'english_name',
         'flag_emoji',
     ];
 }

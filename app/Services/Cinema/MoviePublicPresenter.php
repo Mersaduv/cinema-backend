@@ -11,6 +11,7 @@ final class MoviePublicPresenter
 {
     public function __construct(
         private readonly MediaUrlHelper $mediaUrlHelper,
+        private readonly ImagePresentationService $imagePresentationService,
         private readonly TmdbService $tmdbService,
     ) {}
 
@@ -20,16 +21,18 @@ final class MoviePublicPresenter
     public function listMeta(Movie $movie): array
     {
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+        $posterImage = $this->imagePresentationService->moviePosterImage($metadata);
+        $backdropImage = $this->imagePresentationService->movieBackdropImage($metadata);
 
         return [
-            'poster_url' => $this->mediaUrlHelper->resolveManagedOrExternalUrl(
-                $movie->poster_path,
-                data_get($metadata, 'tmdb.poster_url'),
-            ),
-            'backdrop_url' => $this->mediaUrlHelper->resolveManagedOrExternalUrl(
-                null,
-                data_get($metadata, 'tmdb.backdrop_url'),
-            ),
+            'poster_url' => $this->imagePresentationService->resolveMoviePosterUrl($movie->poster_path, $metadata),
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
+            'backdrop_url' => $this->imagePresentationService->resolveMovieBackdropUrl($metadata),
+            'backdrop_blur_url' => data_get($backdropImage, 'blur'),
+            'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
+            'backdrop_image' => $backdropImage,
             'genres' => $this->genres($movie),
             'rating' => data_get($metadata, 'tmdb.rating'),
         ];

@@ -5,9 +5,11 @@ namespace App\Console\Commands;
 use App\Models\Genre;
 use App\Models\ProductionCountry;
 use App\Models\SpokenLanguage;
+use App\Services\Cinema\CatalogCacheService;
+use App\Services\Cinema\EnsureTmdbReferenceDataService;
+use Illuminate\Support\Facades\Cache;
 use App\Support\CatalogGenreManifest;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
@@ -17,7 +19,7 @@ class SyncTmdbReferenceData extends Command
 
     protected $description = 'Sync TMDB genres, countries, and languages into local reference tables';
 
-    public function handle(): int
+    public function handle(CatalogCacheService $catalogCache): int
     {
         $language = config('services.tmdb.default_language', 'fa-IR');
         $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
@@ -36,7 +38,8 @@ class SyncTmdbReferenceData extends Command
         $languageCount = $this->syncLanguages($baseUrl, $apiKey, $token);
         CatalogGenreManifest::ensureCatalogGenresExist();
 
-        Cache::forget('filter_options');
+        $catalogCache->forgetSharedReferenceData();
+        Cache::forget(EnsureTmdbReferenceDataService::SYNC_LOCK_KEY);
 
         $this->info("✓ {$movieGenreCount} movie genres, {$tvGenreCount} TV genres, {$countryCount} countries, {$languageCount} languages synced");
 
@@ -96,6 +99,7 @@ class SyncTmdbReferenceData extends Command
                 [
                     'name' => (string) ($row['native_name'] ?? $row['english_name'] ?? $iso),
                     'native_name' => $row['native_name'] ?? null,
+                    'english_name' => $row['english_name'] ?? null,
                     'flag_emoji' => $this->flagForIso($iso),
                 ],
             );

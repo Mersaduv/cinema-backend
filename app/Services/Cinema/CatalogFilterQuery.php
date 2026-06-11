@@ -3,13 +3,16 @@
 namespace App\Services\Cinema;
 
 use App\Models\Genre;
-use App\Models\ProductionCountry;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Schema;
 
 class CatalogFilterQuery
 {
+    public function __construct(
+        private readonly CountryCatalogService $countryCatalogService,
+    ) {}
+
     /**
      * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
      */
@@ -156,7 +159,7 @@ class CatalogFilterQuery
      */
     private function applyCountryFilter(Builder $query, array $isos, string $table): void
     {
-        $labels = $this->countryLabelsForIsos($isos);
+        $labels = $this->countryCatalogService->labelsForIsos($isos);
 
         $query->where(function (Builder $outer) use ($isos, $labels, $table): void {
             if ($this->hasColumn($table, 'origin_country')) {
@@ -168,69 +171,10 @@ class CatalogFilterQuery
             }
 
             foreach ($isos as $iso) {
+                $outer->orWhereJsonContains('metadata->tmdb->country_isos', $iso);
                 $outer->orWhere('metadata->tmdb->countries', 'like', '%"'.$iso.'"%');
             }
         });
-    }
-
-    /**
-     * @param  array<int, string>  $isos
-     * @return array<int, string>
-     */
-    private function countryLabelsForIsos(array $isos): array
-    {
-        $manualFa = [
-            'US' => 'آمریکا',
-            'GB' => 'بریتانیا',
-            'KR' => 'کره جنوبی',
-            'IR' => 'ایران',
-            'FR' => 'فرانسه',
-            'DE' => 'آلمان',
-            'TR' => 'ترکیه',
-            'JP' => 'ژاپن',
-            'IN' => 'هند',
-            'CN' => 'چین',
-        ];
-
-        $labels = [];
-
-        foreach ($isos as $iso) {
-            $iso = strtoupper($iso);
-            $labels[] = $iso;
-
-            if (isset($manualFa[$iso])) {
-                $labels[] = $manualFa[$iso];
-            }
-
-            $country = ProductionCountry::query()
-                ->where('iso_3166_1', $iso)
-                ->first();
-
-            if ($country) {
-                $labels[] = $country->name;
-                if ($country->native_name) {
-                    $labels[] = $country->native_name;
-                }
-            }
-
-            if (class_exists(\Locale::class) && method_exists(\Locale::class, 'getDisplayRegion')) {
-                try {
-                    $display = (string) \Locale::getDisplayRegion('und_'.$iso, 'fa');
-                    if (trim($display) !== '' && strtoupper(trim($display)) !== $iso) {
-                        $labels[] = $display;
-                    }
-                } catch (\Throwable) {
-                    // ignore
-                }
-            }
-        }
-
-        return collect($labels)
-            ->map(fn (string $value) => trim($value))
-            ->filter()
-            ->unique()
-            ->values()
-            ->all();
     }
 
     /**
@@ -382,6 +326,8 @@ class CatalogFilterQuery
             'oldest' => $query->orderBy('published_at')->orderBy('id'),
             'title_asc' => $query->orderBy('title')->orderBy('id'),
             'title_desc' => $query->orderByDesc('title')->orderBy('id'),
+            'release_year_asc', 'year_asc' => $query->orderBy('release_year')->orderBy('id'),
+            'release_year_desc', 'year_desc' => $query->orderByDesc('release_year')->orderByDesc('id'),
             'top_rated', 'imdb_desc' => $this->hasColumn($table, 'filter_rating')
                 ? $query->orderByDesc('filter_rating')->orderByDesc('id')
                 : $query->orderByDesc('published_at'),

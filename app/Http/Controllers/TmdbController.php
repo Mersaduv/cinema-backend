@@ -87,6 +87,36 @@ class TmdbController extends Controller
         ]);
     }
 
+    public function fetchCollection(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'tmdb_id' => ['required', 'integer', 'min:1'],
+            'language' => ['nullable', 'string', 'max:12'],
+        ])->validate();
+
+        try {
+            $collection = $this->tmdbService->fetchCollection(
+                (int) $validated['tmdb_id'],
+                $validated['language'] ?? null,
+            );
+        } catch (Throwable $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => 'TMDB collection fetch failed.',
+                'errors' => [
+                    'tmdb' => [$exception->getMessage()],
+                ],
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'collection' => $collection,
+            ],
+        ]);
+    }
+
     public function fetchTv(Request $request): JsonResponse
     {
         $validated = Validator::make($request->all(), [

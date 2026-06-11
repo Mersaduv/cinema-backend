@@ -56,6 +56,19 @@ final class CinemaSynopsisHelper
      *
      * @return array{synopsis: ?string, synopsis_en: ?string}
      */
+    /**
+     * Movie/series/season/episode synopsis: Persian in synopsis, English reference in synopsis_en.
+     *
+     * @return array{synopsis: ?string, synopsis_en: ?string}
+     */
+    public function localizeContentSynopsis(
+        ?string $persianSynopsis,
+        ?string $englishSynopsis,
+        bool $autoTranslate = true,
+    ): array {
+        return $this->localizeSeasonOrEpisode($persianSynopsis, $englishSynopsis, $autoTranslate);
+    }
+
     public function localizeSeasonOrEpisode(
         ?string $persianSynopsis,
         ?string $englishSynopsis,

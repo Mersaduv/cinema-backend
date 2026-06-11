@@ -40,6 +40,7 @@ class Series extends Model
         'provider_name',
         'poster_url',
         'backdrop_url',
+        'pipeline_status',
         'trailer_url',
         'age_rating',
         'catalog_visibility',

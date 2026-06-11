@@ -26,6 +26,7 @@ class ReviewsTest extends TestCase
             'user_id' => User::factory()->create()->id,
             'rating' => 8,
             'body' => 'Great movie.',
+            'status' => Review::STATUS_APPROVED,
             'is_approved' => true,
         ]);
 
@@ -36,6 +37,20 @@ class ReviewsTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.summary.total_count', 1)
             ->assertJsonPath('data.reviews.0.rating', 8);
+    }
+
+    public function test_review_body_must_be_at_least_three_characters(): void
+    {
+        $movie = $this->createPublishedMovie();
+        $user = User::factory()->create(['status' => 'active']);
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/reviews', [
+            'reviewable_type' => 'movie',
+            'slug' => $movie->slug,
+            'rating' => 7,
+            'body' => 'ok',
+        ])->assertStatus(422);
     }
 
     public function test_authenticated_user_can_submit_review(): void
@@ -61,6 +76,7 @@ class ReviewsTest extends TestCase
             'reviewable_id' => $movie->id,
             'user_id' => $user->id,
             'rating' => 9,
+            'status' => Review::STATUS_PENDING,
         ]);
     }
 
@@ -74,12 +90,14 @@ class ReviewsTest extends TestCase
             'reviewable_type' => 'movie',
             'slug' => $movie->slug,
             'rating' => 7,
+            'body' => 'First review with enough text.',
         ])->assertCreated();
 
         $this->postJson('/api/reviews', [
             'reviewable_type' => 'movie',
             'slug' => $movie->slug,
             'rating' => 8,
+            'body' => 'Duplicate attempt with enough text.',
         ])->assertStatus(409);
     }
 
@@ -95,6 +113,7 @@ class ReviewsTest extends TestCase
             'user_id' => $user->id,
             'rating' => 6,
             'body' => 'Okay.',
+            'status' => Review::STATUS_APPROVED,
             'is_approved' => true,
         ]);
 
@@ -117,12 +136,17 @@ class ReviewsTest extends TestCase
             'reviewable_id' => $movie->id,
             'user_id' => $owner->id,
             'rating' => 6,
+            'body' => 'Original review text.',
+            'status' => Review::STATUS_APPROVED,
             'is_approved' => true,
         ]);
 
         Sanctum::actingAs($other);
 
-        $this->putJson("/api/reviews/{$review->id}", ['rating' => 10])->assertForbidden();
+        $this->putJson("/api/reviews/{$review->id}", [
+            'rating' => 10,
+            'body' => 'Attempted hijack with enough text.',
+        ])->assertForbidden();
     }
 
     public function test_user_can_delete_own_review(): void
@@ -136,6 +160,8 @@ class ReviewsTest extends TestCase
             'reviewable_id' => $movie->id,
             'user_id' => $user->id,
             'rating' => 5,
+            'body' => 'Review to delete later.',
+            'status' => Review::STATUS_APPROVED,
             'is_approved' => true,
         ]);
 
@@ -157,6 +183,8 @@ class ReviewsTest extends TestCase
             'reviewable_id' => $movie->id,
             'user_id' => User::factory()->create()->id,
             'rating' => 4,
+            'body' => 'Needs moderation.',
+            'status' => Review::STATUS_APPROVED,
             'is_approved' => true,
         ]);
 
@@ -177,22 +205,32 @@ class ReviewsTest extends TestCase
         ]);
     }
 
-    public function test_review_rating_cache_updates_on_create_delete(): void
+    public function test_review_rating_cache_updates_on_approve_and_delete(): void
     {
         $movie = $this->createPublishedMovie();
         $user = User::factory()->create(['status' => 'active']);
+        $admin = $this->createAdminUser();
         Sanctum::actingAs($user);
 
         $this->postJson('/api/reviews', [
             'reviewable_type' => 'movie',
             'slug' => $movie->slug,
             'rating' => 8,
+            'body' => 'Pending review waiting for approval.',
         ])->assertCreated();
+
+        $movie->refresh();
+        $this->assertNull($movie->cached_avg_rating);
+
+        $review = Review::query()->where('user_id', $user->id)->firstOrFail();
+
+        Sanctum::actingAs($admin);
+        $this->putJson("/api/admin/reviews/{$review->id}/approve")->assertOk();
 
         $movie->refresh();
         $this->assertSame(8.0, (float) $movie->cached_avg_rating);
 
-        $review = Review::query()->where('user_id', $user->id)->firstOrFail();
+        Sanctum::actingAs($user);
         $this->deleteJson("/api/reviews/{$review->id}")->assertOk();
 
         $movie->refresh();
@@ -209,6 +247,7 @@ class ReviewsTest extends TestCase
             'user_id' => User::factory()->create()->id,
             'rating' => 7,
             'body' => 'Solid.',
+            'status' => Review::STATUS_APPROVED,
             'is_approved' => true,
         ]);
 
@@ -251,6 +290,8 @@ class ReviewsTest extends TestCase
             'reviewable_id' => $series->id,
             'user_id' => User::factory()->create()->id,
             'rating' => 9,
+            'body' => 'Great series overall.',
+            'status' => Review::STATUS_APPROVED,
             'is_approved' => true,
         ]);
 

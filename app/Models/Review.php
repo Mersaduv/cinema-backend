@@ -8,13 +8,23 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Review extends Model
 {
+    public const STATUS_PENDING = 'pending';
+
+    public const STATUS_APPROVED = 'approved';
+
+    public const STATUS_REJECTED = 'rejected';
+
     protected $fillable = [
         'reviewable_type',
         'reviewable_id',
         'user_id',
         'rating',
         'body',
+        'body_original',
+        'status',
+        'admin_note',
         'is_approved',
+        'moderated_at',
     ];
 
     protected function casts(): array
@@ -22,7 +32,15 @@ class Review extends Model
         return [
             'rating' => 'integer',
             'is_approved' => 'boolean',
+            'moderated_at' => 'datetime',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (Review $review): void {
+            $review->is_approved = $review->status === self::STATUS_APPROVED;
+        });
     }
 
     public function user(): BelongsTo
@@ -32,7 +50,12 @@ class Review extends Model
 
     public function scopeApproved(Builder $query): Builder
     {
-        return $query->where('is_approved', true);
+        return $query->where('status', self::STATUS_APPROVED);
+    }
+
+    public function scopePending(Builder $query): Builder
+    {
+        return $query->where('status', self::STATUS_PENDING);
     }
 
     public function scopeForContent(Builder $query, string $type, int $id): Builder

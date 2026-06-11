@@ -127,7 +127,8 @@ class OverviewTranslationService
     {
         $timeout = max(5, (int) config('services.overview_translation.timeout', 30));
         $email = trim((string) config('services.overview_translation.mymemory_email', ''));
-        $chunks = $this->chunkTextForTranslation($englishText, 4200);
+        // MyMemory free API rejects queries longer than 500 characters.
+        $chunks = $this->chunkTextForTranslation($englishText, 450);
         $translatedChunks = [];
 
         foreach ($chunks as $index => $chunk) {
@@ -352,7 +353,8 @@ class OverviewTranslationService
 
         return str_contains($normalized, 'MYMEMORY WARNING')
             || str_contains($normalized, 'QUOTA')
-            || str_contains($normalized, 'INVALID LANGUAGE');
+            || str_contains($normalized, 'INVALID LANGUAGE')
+            || str_contains($normalized, 'QUERY LENGTH LIMIT');
     }
 
     private function containsPersianScript(string $text): bool

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AdminCollectionController;
 use App\Http\Controllers\AdminMovieController;
 use App\Http\Controllers\AdminReviewController;
 use App\Http\Controllers\AdminMediaBrowserController;
@@ -10,6 +11,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\FilterOptionsController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\PersonController;
+use App\Http\Controllers\PublicCollectionController;
 use App\Http\Controllers\PublicMovieController;
 use App\Http\Controllers\PublicReviewController;
 use App\Http\Controllers\PublicSeriesController;
@@ -51,6 +53,8 @@ Route::get('/series/{series:slug}', [PublicSeriesController::class, 'show']);
 Route::get('/series/{series:slug}/related', [PublicSeriesController::class, 'related']);
 Route::get('/series/{series:slug}/episodes', [PublicSeriesController::class, 'episodes']);
 Route::get('/series/{series:slug}/reviews', [PublicReviewController::class, 'seriesReviews']);
+Route::get('/collections', [PublicCollectionController::class, 'index']);
+Route::get('/collections/{collection:slug}', [PublicCollectionController::class, 'show']);
 Route::get('/persons', [PersonController::class, 'index']);
 Route::get('/persons/{slug}', [PersonController::class, 'show']);
 
@@ -83,6 +87,7 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::get('/movies', [AdminMovieController::class, 'index']);
     Route::get('/movies/options', [AdminMovieController::class, 'options']);
     Route::post('/movies', [AdminMovieController::class, 'store']);
+    Route::post('/movies/ingest-tmdb-images', [AdminMovieController::class, 'ingestTmdbImages']);
     Route::post('/movies/preview-hls-package', [AdminMovieController::class, 'previewHlsPackage']);
     Route::post('/movies/check-hls-exists', [AdminMovieController::class, 'checkHlsExists']);
     Route::get('/movies/{movie}', [AdminMovieController::class, 'show']);
@@ -90,19 +95,31 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::post('/movies/{movie}/stop-processing', [AdminMovieController::class, 'stopProcessing']);
     Route::match(['put', 'patch'], '/movies/{movie}/draft-form', [AdminMovieController::class, 'updateDraftForm']);
     Route::match(['put', 'patch'], '/movies/{movie}/publication-form', [AdminMovieController::class, 'updatePublicationForm']);
+    Route::get('/movies/{movie}/pipeline', [AdminMovieController::class, 'getPipeline']);
     Route::match(['put', 'patch'], '/movies/{movie}/publish-status', [AdminMovieController::class, 'updatePublishStatus']);
     Route::delete('/movies/{movie}', [AdminMovieController::class, 'destroy']);
 
     Route::get('/series', [AdminSeriesController::class, 'index']);
     Route::get('/series/options', [AdminSeriesController::class, 'options']);
     Route::post('/series', [AdminSeriesController::class, 'store']);
+    Route::post('/series/ingest-tmdb-images', [AdminSeriesController::class, 'ingestTmdbImages']);
     Route::get('/series/{series}', [AdminSeriesController::class, 'show']);
     Route::match(['put', 'patch'], '/series/{series}', [AdminSeriesController::class, 'update']);
+    Route::get('/series/{series}/pipeline', [AdminSeriesController::class, 'getPipeline']);
     Route::match(['put', 'patch'], '/series/{series}/publish-status', [AdminSeriesController::class, 'updatePublishStatus']);
     Route::delete('/series/{series}', [AdminSeriesController::class, 'destroy']);
 
+    Route::get('/collections', [AdminCollectionController::class, 'index']);
+    Route::post('/collections', [AdminCollectionController::class, 'store']);
+    Route::post('/collections/ingest-tmdb-images', [AdminCollectionController::class, 'ingestTmdbImages']);
+    Route::get('/collections/{collection}', [AdminCollectionController::class, 'show']);
+    Route::match(['put', 'patch'], '/collections/{collection}', [AdminCollectionController::class, 'update']);
+    Route::match(['put', 'patch'], '/collections/{collection}/movies', [AdminCollectionController::class, 'syncMovies']);
+    Route::delete('/collections/{collection}', [AdminCollectionController::class, 'destroy']);
+
     Route::get('/tmdb/search', [TmdbController::class, 'search']);
     Route::get('/tmdb/fetch', [TmdbController::class, 'fetch']);
+    Route::get('/tmdb/collection/fetch', [TmdbController::class, 'fetchCollection']);
     Route::get('/tmdb/tv/fetch', [TmdbController::class, 'fetchTv']);
     Route::get('/tmdb/tv/season/fetch', [TmdbController::class, 'fetchTvSeason']);
     Route::get('/tmdb/person/fetch', [TmdbController::class, 'fetchPerson']);
@@ -112,6 +129,7 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::put('/persons/{person}/refresh-from-tmdb', [AdminPersonController::class, 'refreshFromTmdb']);
 
     Route::get('/reviews', [AdminReviewController::class, 'index']);
+    Route::match(['put', 'patch'], '/reviews/{review}', [AdminReviewController::class, 'update']);
     Route::put('/reviews/{review}/approve', [AdminReviewController::class, 'approve']);
     Route::put('/reviews/{review}/reject', [AdminReviewController::class, 'reject']);
     Route::delete('/reviews/{review}', [AdminReviewController::class, 'destroy']);

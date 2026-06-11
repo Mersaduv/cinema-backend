@@ -7,6 +7,7 @@ use App\Models\MovieCrew;
 use App\Models\Person;
 use App\Models\Series;
 use App\Models\SeriesCrew;
+use App\Services\Cinema\PersonPublicPresenter;
 use App\Support\CatalogListResponseMapper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,6 +17,7 @@ class PersonController extends Controller
 {
     public function __construct(
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
+        private readonly PersonPublicPresenter $personPublicPresenter,
     ) {
     }
 
@@ -51,15 +53,10 @@ class PersonController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
-                'persons' => collect($paginator->items())->map(fn (Person $p) => [
-                    'id' => $p->id,
-                    'name' => $p->name,
-                    'slug' => $p->slug,
-                    'known_for_department' => $p->known_for_department,
-                    'profile_url' => $p->getProfileImageUrl(),
-                    'movies_on_platform_count' => (int) $p->movies_on_platform_count,
-                    'series_on_platform_count' => (int) $p->series_on_platform_count,
-                ])->values()->all(),
+                'persons' => collect($paginator->items())
+                    ->map(fn (Person $p) => $this->personPublicPresenter->listItem($p))
+                    ->values()
+                    ->all(),
                 'pagination' => [
                     'current_page' => $paginator->currentPage(),
                     'last_page' => $paginator->lastPage(),
@@ -72,7 +69,7 @@ class PersonController extends Controller
 
     public function show(string $slug): JsonResponse
     {
-        $payload = Cache::remember('person.public.v2.' . $slug, 3600, function () use ($slug) {
+        $payload = Cache::remember('person.public.v3.' . $slug, 3600, function () use ($slug) {
             $person = Person::query()->where('slug', $slug)->first();
 
             if (!$person) {
@@ -145,6 +142,9 @@ class PersonController extends Controller
                 ['Producer', 'Executive Producer']
             );
 
+            $metadataActors = $this->personPublicPresenter->collectMetadataActorsFromCredits($person);
+            $profile = $this->personPublicPresenter->profileFields($person, $metadataActors);
+
             return [
                 'id' => $person->id,
                 'name' => $person->name,
@@ -155,7 +155,10 @@ class PersonController extends Controller
                 'place_of_birth' => $person->place_of_birth,
                 'known_for_department' => $person->known_for_department,
                 'gender' => $person->gender,
-                'profile_url' => $person->getProfileImageUrl(),
+                'profile_url' => $profile['profile_url'],
+                'profile_blur_url' => $profile['profile_blur_url'],
+                'profile_srcset' => $profile['profile_srcset'],
+                'profile_image' => $profile['profile_image'],
                 'imdb_id' => $person->imdb_id,
                 'stats' => [
                     'movies_count' => count($castInMovies),

@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Models\Genre;
 use App\Support\CatalogListPresentation;
 use App\Services\Cinema\GenreCatalogService;
+use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\MediaPathService;
 use App\Services\TmdbService;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +14,7 @@ class CatalogListResponseMapper
 {
     public function __construct(
         private readonly MediaPathService $mediaPathService,
+        private readonly ImagePresentationService $imagePresentationService,
         private readonly GenreCatalogService $genreCatalogService,
         private readonly TmdbService $tmdbService,
     ) {
@@ -37,6 +39,7 @@ class CatalogListResponseMapper
             'has_dubbed_audio' => (bool) ($row['has_dubbed_audio'] ?? false),
             'has_subtitle' => (bool) ($row['has_subtitle'] ?? false),
             'publish_status' => (string) ($row['publish_status'] ?? 'draft'),
+            'pipeline_status' => (string) ($row['pipeline_status'] ?? 'idle'),
             'processing_status' => (string) ($row['processing_status'] ?? 'pending'),
             'processing_error' => $row['processing_error'] ?? null,
             'created_at' => $this->isoTimestamp($row['created_at'] ?? null),
@@ -72,6 +75,7 @@ class CatalogListResponseMapper
             'has_dubbed' => (bool) ($row['has_dubbed'] ?? false),
             'is_featured' => (bool) ($row['is_featured'] ?? false),
             'publish_status' => (string) ($row['publish_status'] ?? 'draft'),
+            'pipeline_status' => (string) ($row['pipeline_status'] ?? 'idle'),
             'seasons_count' => (int) ($row['seasons_count'] ?? 0),
             'episodes_count' => (int) ($row['episodes_count'] ?? 0),
             'created_at' => $this->isoTimestamp($row['created_at'] ?? null),
@@ -108,9 +112,13 @@ class CatalogListResponseMapper
             $metadata,
         );
 
-        $posterUrl = $this->mediaPathService->inferPublicUrlFromAbsolutePath($row['poster_path'] ?? null)
-            ?: data_get($metadata, 'tmdb.poster_url');
-        $backdropUrl = data_get($metadata, 'tmdb.backdrop_url');
+        $posterUrl = $this->imagePresentationService->resolveMoviePosterUrl(
+            $row['poster_path'] ?? null,
+            $metadata,
+        );
+        $backdropUrl = $this->imagePresentationService->resolveMovieBackdropUrl($metadata);
+        $posterImage = $this->imagePresentationService->moviePosterImage($metadata);
+        $backdropImage = $this->imagePresentationService->movieBackdropImage($metadata);
 
         return [
             'id' => $movieId,
@@ -121,7 +129,13 @@ class CatalogListResponseMapper
             'has_subtitle' => (bool) ($row['has_subtitle'] ?? false),
             'has_dubbed_audio' => (bool) ($row['has_dubbed_audio'] ?? false),
             'poster_url' => $posterUrl,
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
             'backdrop_url' => $backdropUrl,
+            'backdrop_blur_url' => data_get($backdropImage, 'blur'),
+            'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
+            'backdrop_image' => $backdropImage,
             'playback_quality' => CatalogListPresentation::playbackQualityLabel(null, $metadata),
             'rating' => $rating,
             'genres' => $this->genreCatalogService->serializeGenres($genres),
@@ -171,8 +185,14 @@ class CatalogListResponseMapper
             'release_year' => isset($row['release_year']) ? (int) $row['release_year'] : null,
             'status' => $row['status'] ?? null,
             'status_label_fa' => $this->translateProductionStatus($row['status'] ?? null),
-            'poster_url' => $row['poster_url'] ?? null,
-            'backdrop_url' => $row['backdrop_url'] ?? null,
+            'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($row['poster_url'] ?? null, $metadata),
+            'poster_blur_url' => data_get($this->imagePresentationService->seriesPosterImage($metadata), 'blur'),
+            'poster_srcset' => data_get($this->imagePresentationService->seriesPosterImage($metadata), 'srcset_string'),
+            'poster_image' => $this->imagePresentationService->seriesPosterImage($metadata),
+            'backdrop_url' => $this->imagePresentationService->resolveSeriesBackdropUrl($row['backdrop_url'] ?? null, $metadata),
+            'backdrop_blur_url' => data_get($this->imagePresentationService->seriesBackdropImage($metadata), 'blur'),
+            'backdrop_srcset' => data_get($this->imagePresentationService->seriesBackdropImage($metadata), 'srcset_string'),
+            'backdrop_image' => $this->imagePresentationService->seriesBackdropImage($metadata),
             'network' => $row['network'] ?? null,
             'number_of_seasons' => isset($row['number_of_seasons']) ? (int) $row['number_of_seasons'] : null,
             'number_of_episodes' => isset($row['number_of_episodes']) ? (int) $row['number_of_episodes'] : null,

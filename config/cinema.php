@@ -19,6 +19,8 @@ return [
         'CINEMA_HLS_SOURCE_PROBE_FILENAMES',
         'source.mp4,movie.mp4,download.mp4,full.mp4'
     ))))),
+    'revalidation_url' => env('CINEMA_REVALIDATION_URL'),
+    'revalidation_secret' => env('CINEMA_REVALIDATION_SECRET'),
     'media_root' => env('CINEMA_MEDIA_ROOT', 'D:\\media'),
     'media_public_base_url' => env('CINEMA_MEDIA_PUBLIC_BASE_URL', '/media'),
     'ffmpeg_binary' => env('CINEMA_FFMPEG_BINARY', 'ffmpeg'),

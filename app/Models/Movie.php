@@ -40,6 +40,7 @@ class Movie extends Model
         'media_folder',
         'publish_status',
         'processing_status',
+        'pipeline_status',
         'processing_error',
         'scheduled_for',
         'published_at',
@@ -90,6 +91,13 @@ class Movie extends Model
     public function genres(): BelongsToMany
     {
         return $this->belongsToMany(Genre::class, 'movie_genre');
+    }
+
+    public function collections(): BelongsToMany
+    {
+        return $this->belongsToMany(Collection::class, 'collection_movie')
+            ->withPivot(['sort_order'])
+            ->withTimestamps();
     }
 
     public function reviews(): HasMany

@@ -44,6 +44,30 @@ class OverviewTranslationServiceTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_translate_chunks_long_text_for_mymemory_limit(): void
+    {
+        config()->set('services.overview_translation.enabled', true);
+        config()->set('services.overview_translation.driver', 'mymemory');
+        Cache::flush();
+
+        $longEnglish = str_repeat('A long overview sentence about the plot. ', 20);
+
+        Http::fake([
+            'api.mymemory.translated.net/*' => Http::response([
+                'responseData' => [
+                    'translatedText' => 'بخش اول خلاصه.',
+                ],
+            ], 200),
+        ]);
+
+        $service = app(OverviewTranslationService::class);
+        $result = $service->translateEnglishOverviewToPersian($longEnglish);
+
+        $this->assertNotNull($result);
+        $this->assertStringContainsString('بخش اول خلاصه.', $result);
+        $this->assertGreaterThan(1, count(Http::recorded()));
+    }
+
     public function test_translate_uses_openai_when_driver_is_openai(): void
     {
         config()->set('services.overview_translation.enabled', true);

@@ -6,46 +6,17 @@ use App\Models\Movie;
 use App\Models\Review;
 use App\Models\Series;
 use App\Models\User;
+use App\Services\Cinema\ReviewPresentationService;
 use App\Services\Cinema\ReviewRatingService;
-use Illuminate\Support\Facades\Auth;
+use GraphQL\Type\Definition\ResolveInfo;
+use Nuwave\Lighthouse\Support\Contracts\GraphQLContext;
 
 class ContentReviewsResolver
 {
     public function __construct(
         private readonly ReviewRatingService $reviewRatingService,
+        private readonly ReviewPresentationService $reviewPresentationService,
     ) {
-    }
-
-    /**
-     * @param  array<string, mixed>  $args
-     * @return array<string, mixed>
-     */
-    public function forMovie(Movie $movie, array $args): array
-    {
-        return $this->buildPayload('movie', (int) $movie->id, $args);
-    }
-
-    /**
-     * @param  array<string, mixed>  $args
-     * @return array<string, mixed>
-     */
-    public function forSeries(Series $series, array $args): array
-    {
-        return $this->buildPayload('series', (int) $series->id, $args);
-    }
-
-    /**
-     * @param  array<string, mixed>  $root
-     * @param  array<string, mixed>  $args
-     * @return array<string, mixed>
-     */
-    public function forSeriesOverview(array $root, array $args): array
-    {
-        $series = Series::query()
-            ->where('slug', (string) ($root['slug'] ?? ''))
-            ->firstOrFail();
-
-        return $this->buildPayload('series', (int) $series->id, $args);
     }
 
     public function movieCachedAvgRating(Movie $movie): ?float
@@ -53,41 +24,61 @@ class ContentReviewsResolver
         return $movie->cached_avg_rating !== null ? (float) $movie->cached_avg_rating : null;
     }
 
-    /**
-     * @param  array<string, mixed>  $root
-     */
     public function seriesOverviewCachedAvgRating(array $root): ?float
     {
-        $series = Series::query()
-            ->where('slug', (string) ($root['slug'] ?? ''))
-            ->first();
+        $value = $root['cached_avg_rating'] ?? null;
 
-        return $series?->cached_avg_rating !== null ? (float) $series->cached_avg_rating : null;
+        return $value !== null ? (float) $value : null;
     }
 
     /**
-     * @param  array<string, mixed>  $args
      * @return array<string, mixed>
      */
-    private function buildPayload(string $type, int $contentId, array $args): array
+    public function forMovie(mixed $root, array $args, GraphQLContext $context, ResolveInfo $resolveInfo): array
     {
-        $first = min(max((int) ($args['first'] ?? 10), 1), 50);
+        $movie = $root instanceof Movie ? $root : null;
+
+        if (! $movie) {
+            return $this->emptyPayload();
+        }
+
+        return $this->buildPayload('movie', (int) $movie->id, $args, $context);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function forSeriesOverview(mixed $root, array $args, GraphQLContext $context, ResolveInfo $resolveInfo): array
+    {
+        if (! is_array($root) || ! isset($root['id'])) {
+            return $this->emptyPayload();
+        }
+
+        return $this->buildPayload('series', (int) $root['id'], $args, $context);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function buildPayload(string $type, int $contentId, array $args, GraphQLContext $context): array
+    {
         $page = max(1, (int) ($args['page'] ?? 1));
-        $sort = (string) ($args['sort'] ?? 'NEWEST');
+        $perPage = min(max((int) ($args['first'] ?? 10), 1), 50);
+        $sort = strtoupper((string) ($args['sort'] ?? 'NEWEST'));
 
         $query = Review::query()
             ->approved()
             ->forContent($type, $contentId)
             ->with('user');
 
-        $query = match (strtoupper($sort)) {
+        $query = match ($sort) {
             'OLDEST' => $query->orderBy('created_at'),
             'TOP_RATED' => $query->orderByDesc('rating')->orderByDesc('created_at'),
             default => $query->orderByDesc('created_at'),
         };
 
-        $paginator = $query->paginate($first, ['*'], 'page', $page);
-        $authUser = Auth::user();
+        $paginator = $query->paginate($perPage, ['*'], 'page', $page);
+        $authUser = $context->user();
 
         $userReview = null;
         if ($authUser instanceof User) {
@@ -96,17 +87,24 @@ class ContentReviewsResolver
                 ->where('user_id', $authUser->id)
                 ->with('user')
                 ->first();
-            $userReview = $own ? $this->transformReview($own, $authUser) : null;
+            $userReview = $own ? $this->reviewPresentationService->transform($own, $authUser) : null;
         }
+
+        $summary = $this->reviewRatingService->summaryForContent($type, $contentId);
 
         return [
             'reviews' => collect($paginator->items())
-                ->map(fn (Review $review) => $this->transformReview($review, $authUser))
+                ->map(fn (Review $review) => $this->reviewPresentationService->transform($review, $authUser))
                 ->values()
                 ->all(),
-            'summary' => $this->formatSummaryForGraphql(
-                $this->reviewRatingService->summaryForContent($type, $contentId),
-            ),
+            'summary' => [
+                'total_count' => $summary['total_count'],
+                'average_rating' => $summary['average_rating'],
+                'distribution' => collect($summary['distribution'])
+                    ->map(fn ($count, $rating) => ['rating' => (int) $rating, 'count' => (int) $count])
+                    ->values()
+                    ->all(),
+            ],
             'user_review' => $userReview,
             'paginatorInfo' => [
                 'currentPage' => $paginator->currentPage(),
@@ -117,42 +115,26 @@ class ContentReviewsResolver
     }
 
     /**
-     * @param  array{total_count: int, average_rating: float, distribution: array<string, int>}  $summary
-     * @return array{total_count: int, average_rating: float, distribution: array<int, array{rating: int, count: int}>}
-     */
-    private function formatSummaryForGraphql(array $summary): array
-    {
-        $distribution = [];
-        foreach ($summary['distribution'] as $rating => $count) {
-            $distribution[] = [
-                'rating' => (int) $rating,
-                'count' => (int) $count,
-            ];
-        }
-
-        return [
-            'total_count' => $summary['total_count'],
-            'average_rating' => $summary['average_rating'],
-            'distribution' => $distribution,
-        ];
-    }
-
-    /**
      * @return array<string, mixed>
      */
-    private function transformReview(Review $review, ?User $authUser): array
+    private function emptyPayload(): array
     {
         return [
-            'id' => (string) $review->id,
-            'user' => [
-                'id' => (string) $review->user->id,
-                'name' => $review->user->name,
-                'avatar_url' => null,
+            'reviews' => [],
+            'summary' => [
+                'total_count' => 0,
+                'average_rating' => 0,
+                'distribution' => collect(range(1, 10))
+                    ->map(fn (int $rating) => ['rating' => $rating, 'count' => 0])
+                    ->values()
+                    ->all(),
             ],
-            'rating' => (int) $review->rating,
-            'body' => $review->body,
-            'created_at' => $review->created_at?->toISOString(),
-            'is_own' => $authUser !== null && (int) $review->user_id === (int) $authUser->id,
+            'user_review' => null,
+            'paginatorInfo' => [
+                'currentPage' => 1,
+                'lastPage' => 1,
+                'total' => 0,
+            ],
         ];
     }
 }

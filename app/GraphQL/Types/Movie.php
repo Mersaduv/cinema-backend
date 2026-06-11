@@ -5,12 +5,14 @@ namespace App\GraphQL\Types;
 use App\GraphQL\Support\MediaUrlHelper;
 use App\Models\Movie as MovieModel;
 use App\Services\Cinema\GenreCatalogService;
+use App\Services\Cinema\ImagePresentationService;
 use App\Services\TmdbService;
 
 final class Movie
 {
     public function __construct(
         private readonly MediaUrlHelper $mediaUrlHelper,
+        private readonly ImagePresentationService $imagePresentationService,
         private readonly TmdbService $tmdbService,
         private readonly GenreCatalogService $genreCatalogService,
     ) {}
@@ -19,20 +21,54 @@ final class Movie
     {
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
 
-        return $this->mediaUrlHelper->resolveManagedOrExternalUrl(
-            $movie->poster_path,
-            data_get($metadata, 'tmdb.poster_url'),
-        );
+        return $this->imagePresentationService->resolveMoviePosterUrl($movie->poster_path, $metadata);
     }
 
     public function backdropUrl(MovieModel $movie): ?string
     {
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
 
-        return $this->mediaUrlHelper->resolveManagedOrExternalUrl(
-            null,
-            data_get($metadata, 'tmdb.backdrop_url'),
-        );
+        return $this->imagePresentationService->resolveMovieBackdropUrl($metadata);
+    }
+
+    /**
+     * @return ?array<string, mixed>
+     */
+    public function posterImage(MovieModel $movie): ?array
+    {
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        return $this->imagePresentationService->moviePosterImage($metadata);
+    }
+
+    /**
+     * @return ?array<string, mixed>
+     */
+    public function backdropImage(MovieModel $movie): ?array
+    {
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        return $this->imagePresentationService->movieBackdropImage($metadata);
+    }
+
+    public function posterBlurUrl(MovieModel $movie): ?string
+    {
+        return data_get($this->posterImage($movie), 'blur');
+    }
+
+    public function posterSrcset(MovieModel $movie): ?string
+    {
+        return data_get($this->posterImage($movie), 'srcset_string');
+    }
+
+    public function backdropBlurUrl(MovieModel $movie): ?string
+    {
+        return data_get($this->backdropImage($movie), 'blur');
+    }
+
+    public function backdropSrcset(MovieModel $movie): ?string
+    {
+        return data_get($this->backdropImage($movie), 'srcset_string');
     }
 
     public function trailerUrl(MovieModel $movie): ?string
@@ -138,6 +174,9 @@ final class Movie
                     'name' => $actor['name'] ?? null,
                     'character' => $actor['character'] ?? null,
                     'profile_url' => $actor['profile_url'] ?? null,
+                    'profile_image' => is_array($actor['profile_image'] ?? null)
+                        ? $actor['profile_image']
+                        : null,
                 ])
                 ->values()
                 ->all(),

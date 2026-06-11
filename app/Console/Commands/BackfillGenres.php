@@ -3,8 +3,8 @@
 namespace App\Console\Commands;
 
 use App\Models\Movie;
-use App\Models\ProductionCountry;
 use App\Models\Series;
+use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\GenreCatalogService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Schema;
@@ -15,7 +15,7 @@ class BackfillGenres extends Command
 
     protected $description = 'Backfill movie_genre/series_genre pivots and origin fields from metadata JSON';
 
-    public function handle(GenreCatalogService $genreCatalogService): int
+    public function handle(GenreCatalogService $genreCatalogService, CountryCatalogService $countryCatalogService): int
     {
         if (! Schema::hasTable('genres')) {
             $this->error('Run migrations first: php artisan migrate');
@@ -26,7 +26,7 @@ class BackfillGenres extends Command
         $movieCount = 0;
         $seriesCount = 0;
 
-        Movie::query()->chunkById(50, function ($movies) use ($genreCatalogService, &$movieCount): void {
+        Movie::query()->chunkById(50, function ($movies) use ($genreCatalogService, $countryCatalogService, &$movieCount): void {
             foreach ($movies as $movie) {
                 $metadata = is_array($movie->metadata) ? $movie->metadata : [];
                 $rawGenres = data_get($metadata, 'tmdb.genres', []);
@@ -34,7 +34,7 @@ class BackfillGenres extends Command
                     $genreCatalogService->syncMovieGenres($movie, $rawGenres);
                 }
 
-                $updates = $this->filterFieldUpdates($metadata, $movie->age_rating, 'movies');
+                $updates = $this->filterFieldUpdates($metadata, $movie->age_rating, 'movies', $countryCatalogService);
                 if ($updates !== []) {
                     $movie->update($updates);
                 }
@@ -43,7 +43,7 @@ class BackfillGenres extends Command
             }
         });
 
-        Series::query()->chunkById(50, function ($seriesItems) use ($genreCatalogService, &$seriesCount): void {
+        Series::query()->chunkById(50, function ($seriesItems) use ($genreCatalogService, $countryCatalogService, &$seriesCount): void {
             foreach ($seriesItems as $series) {
                 $metadata = is_array($series->metadata) ? $series->metadata : [];
                 $rawGenres = data_get($metadata, 'tmdb.genres', []);
@@ -51,7 +51,7 @@ class BackfillGenres extends Command
                     $genreCatalogService->syncSeriesGenres($series, $rawGenres);
                 }
 
-                $updates = $this->filterFieldUpdates($metadata, null, 'series');
+                $updates = $this->filterFieldUpdates($metadata, null, 'series', $countryCatalogService);
                 if ($updates !== []) {
                     $series->update($updates);
                 }
@@ -69,13 +69,23 @@ class BackfillGenres extends Command
      * @param  array<string, mixed>  $metadata
      * @return array<string, mixed>
      */
-    private function filterFieldUpdates(array $metadata, ?string $ageRating, string $table): array
-    {
+    private function filterFieldUpdates(
+        array $metadata,
+        ?string $ageRating,
+        string $table,
+        CountryCatalogService $countryCatalogService,
+    ): array {
         $updates = [];
 
-        $iso = $this->resolveOriginCountryIso(data_get($metadata, 'tmdb.countries', []));
-        if ($iso !== null) {
-            $updates['origin_country'] = $iso;
+        $countryLabels = data_get($metadata, 'tmdb.countries', []);
+        $countryIsos = is_array($countryLabels)
+            ? $countryCatalogService->resolveIsos($countryLabels)
+            : [];
+
+        if ($countryIsos !== []) {
+            $updates['origin_country'] = $countryIsos[0];
+            $metadata['tmdb']['country_isos'] = $countryIsos;
+            $updates['metadata'] = $metadata;
         }
 
         $lang = data_get($metadata, 'tmdb.original_language');
@@ -94,33 +104,5 @@ class BackfillGenres extends Command
         }
 
         return $updates;
-    }
-
-    /**
-     * @param  mixed  $countries
-     */
-    private function resolveOriginCountryIso($countries): ?string
-    {
-        if (! is_array($countries) || $countries === []) {
-            return null;
-        }
-
-        $first = $countries[0];
-        if (! is_string($first)) {
-            return null;
-        }
-
-        $first = trim($first);
-        if (strlen($first) === 2) {
-            return strtoupper($first);
-        }
-
-        $country = ProductionCountry::query()
-            ->where('iso_3166_1', strtoupper($first))
-            ->orWhere('name', $first)
-            ->orWhere('native_name', $first)
-            ->first();
-
-        return $country?->iso_3166_1;
     }
 }

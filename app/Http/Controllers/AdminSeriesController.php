@@ -2,18 +2,25 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\ProcessSeriesImagesJob;
 use App\Jobs\SyncSeriesPersonCreditsJob;
 use App\Models\Series;
 use App\Services\Cinema\AdminCatalogSummaryService;
 use App\Services\Cinema\AdminReferenceOptionsService;
 use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogListProcedureService;
+use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Support\CatalogListResponseMapper;
+use App\Support\CinemaValidation;
 use App\Models\SeriesCast;
 use App\Models\SeriesCrew;
 use App\Models\SeriesEpisode;
 use App\Models\SeriesSeason;
+use App\Services\Cinema\ContentImageIngestionService;
+use App\Services\Cinema\ContentPipelineLauncher;
+use App\Services\Cinema\ContentPipelineStatusService;
+use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\PublishScheduleService;
 use App\Services\Cinema\SeriesHlsPathService;
 use App\Support\CinemaSynopsisHelper;
@@ -36,11 +43,16 @@ class AdminSeriesController extends Controller
         private readonly CinemaSynopsisHelper $synopsisHelper,
         private readonly PublishScheduleService $publishScheduleService,
         private readonly GenreCatalogService $genreCatalogService,
+        private readonly CountryCatalogService $countryCatalogService,
         private readonly AdminReferenceOptionsService $adminReferenceOptionsService,
         private readonly AdminCatalogSummaryService $adminCatalogSummaryService,
         private readonly CatalogListProcedureService $catalogListProcedureService,
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
+        private readonly ContentImageIngestionService $contentImageIngestionService,
+        private readonly ImagePresentationService $imagePresentationService,
+        private readonly ContentPipelineLauncher $contentPipelineLauncher,
+        private readonly ContentPipelineStatusService $contentPipelineStatusService,
     ) {
     }
 
@@ -230,6 +242,7 @@ class AdminSeriesController extends Controller
         }
 
         $localizedGenres = $this->resolveLocalizedGenres($validated);
+        $validated = $this->applyLocalizedContentSynopsis($validated);
 
         $series = DB::transaction(function () use ($validated, $request, $localizedGenres) {
             $slug = $this->resolveUniqueSlug([
@@ -269,19 +282,31 @@ class AdminSeriesController extends Controller
             );
 
             $this->syncSeriesCatalogFields($series, $validated, $localizedGenres);
+            $this->applySeriesImageIngestion($series, $validated);
 
             return $series;
         });
 
         $this->invalidateCatalogCache();
-        $this->queueSeriesCreditsSync($series->id, $validated);
 
-        $this->publishScheduleService->syncScheduledPublishRunner($series);
+        $series->refresh();
+        $pipelineStatus = $this->contentPipelineLauncher->launchForSeries(
+            $series,
+            $validated,
+            (int) ($request->user()?->id ?? 0),
+        );
+
+        $this->publishScheduleService->syncScheduledPublishRunner($series->fresh());
+
+        $openedPipeline = in_array($pipelineStatus, ['pending', 'running'], true);
 
         return response()->json([
             'success' => true,
-            'message' => 'Series registered successfully.',
-            'data' => $this->slimSeriesResponseData($series),
+            'message' => $openedPipeline
+                ? 'محتوا در حال پردازش است. پس از تکمیل، منتشر خواهد شد.'
+                : 'Series registered successfully.',
+            'pipeline_status' => $pipelineStatus,
+            'data' => $this->slimSeriesResponseData($series->fresh()),
         ], 201);
     }
 
@@ -317,6 +342,7 @@ class AdminSeriesController extends Controller
         }
 
         $localizedGenres = $this->resolveLocalizedGenres($validated);
+        $validated = $this->applyLocalizedContentSynopsis($validated, $series);
 
         $updated = DB::transaction(function () use ($series, $validated, $localizedGenres) {
             $slug = $this->resolveUniqueSlug([
@@ -359,19 +385,44 @@ class AdminSeriesController extends Controller
             );
 
             $this->syncSeriesCatalogFields($series, $validated, $localizedGenres);
+            $this->applySeriesImageIngestion($series, $validated);
 
             return $series;
         });
 
         $this->invalidateCatalogCache();
-        $this->queueSeriesCreditsSync($updated->id, $validated);
 
-        $this->publishScheduleService->syncScheduledPublishRunner($updated);
+        $updated->refresh();
+        $pipelineStatus = $this->contentPipelineLauncher->launchForSeries(
+            $updated,
+            $validated,
+            (int) ($request->user()?->id ?? 0),
+        );
+
+        $this->publishScheduleService->syncScheduledPublishRunner($updated->fresh());
+
+        $openedPipeline = in_array($pipelineStatus, ['pending', 'running'], true);
 
         return response()->json([
             'success' => true,
-            'message' => 'Series saved successfully.',
-            'data' => $this->slimSeriesResponseData($updated),
+            'message' => $openedPipeline
+                ? 'محتوا در حال پردازش است. پس از تکمیل، منتشر خواهد شد.'
+                : 'Series saved successfully.',
+            'pipeline_status' => $pipelineStatus,
+            'data' => $this->slimSeriesResponseData($updated->fresh()),
+        ]);
+    }
+
+    public function getPipeline(Series $series): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => $this->contentPipelineStatusService->buildResponse(
+                'series',
+                $series->id,
+                (string) ($series->pipeline_status ?? 'idle'),
+                (string) $series->publish_status,
+            ),
         ]);
     }
 
@@ -394,6 +445,13 @@ class AdminSeriesController extends Controller
                 'errors' => [
                     'scheduled_for' => ['A schedule date is required for scheduled series.'],
                 ],
+            ], 422);
+        }
+
+        if (in_array($series->pipeline_status, ['pending', 'running'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Content processing pipeline is still running. Please wait until it completes.',
             ], 422);
         }
 
@@ -470,6 +528,7 @@ class AdminSeriesController extends Controller
             'slug' => ['nullable', 'string', 'max:255', $slugRule],
             'original_title' => ['nullable', 'string', 'max:255'],
             'synopsis' => ['nullable', 'string'],
+            'synopsis_en' => ['nullable', 'string'],
             'first_air_date' => ['nullable', 'date'],
             'last_air_date' => ['nullable', 'date'],
             'release_year' => ['nullable', 'integer', 'between:1888,2100'],
@@ -480,8 +539,10 @@ class AdminSeriesController extends Controller
             'number_of_episodes' => ['nullable', 'integer', 'min:0', 'max:9999'],
             'network' => ['nullable', 'string', 'max:255'],
             'provider_name' => ['nullable', 'string', 'max:255'],
-            'poster_url' => ['nullable', 'url', 'max:2048'],
-            'backdrop_url' => ['nullable', 'url', 'max:2048'],
+            'poster_url' => CinemaValidation::nullableImageOrUrl(),
+            'backdrop_url' => CinemaValidation::nullableImageOrUrl(),
+            'banner_url' => CinemaValidation::nullableImageOrUrl(),
+            'logo_url' => CinemaValidation::nullableImageOrUrl(),
             'trailer_url' => ['nullable', 'url', 'max:2048'],
             'homepage_url' => ['nullable', 'url', 'max:2048'],
             'age_rating' => ['nullable', 'string', 'max:50'],
@@ -512,7 +573,7 @@ class AdminSeriesController extends Controller
             'actors' => ['nullable', 'array'],
             'actors.*.name' => ['required_with:actors', 'string', 'max:255'],
             'actors.*.character' => ['nullable', 'string', 'max:255'],
-            'actors.*.profile_url' => ['nullable', 'url', 'max:2048'],
+            'actors.*.profile_url' => CinemaValidation::nullableImageOrUrl(),
             'cast' => ['nullable', 'array'],
             'cast.*.tmdb_person_id' => ['nullable', 'integer', 'min:0'],
             'cast.*.name' => ['nullable', 'string', 'max:255'],
@@ -538,7 +599,7 @@ class AdminSeriesController extends Controller
             'seasons.*.synopsis_en' => ['nullable', 'string'],
             'seasons.*.air_date' => ['nullable', 'date'],
             'seasons.*.episode_count' => ['nullable', 'integer', 'min:0', 'max:999'],
-            'seasons.*.poster_url' => ['nullable', 'url', 'max:2048'],
+            'seasons.*.poster_url' => CinemaValidation::nullableImageOrUrl(),
             'seasons.*.episodes' => ['nullable', 'array'],
             'seasons.*.episodes.*.episode_number' => ['required_with:seasons.*.episodes', 'integer', 'min:0', 'max:999'],
             'seasons.*.episodes.*.title' => ['nullable', 'string', 'max:255'],
@@ -546,7 +607,7 @@ class AdminSeriesController extends Controller
             'seasons.*.episodes.*.synopsis_en' => ['nullable', 'string'],
             'seasons.*.episodes.*.air_date' => ['nullable', 'date'],
             'seasons.*.episodes.*.duration_minutes' => ['nullable', 'integer', 'min:1', 'max:999'],
-            'seasons.*.episodes.*.still_url' => ['nullable', 'url', 'max:2048'],
+            'seasons.*.episodes.*.still_url' => CinemaValidation::nullableImageOrUrl(),
             'seasons.*.episodes.*.source_method' => ['nullable', Rule::in(['upload', 'embed', 'url', 'hls'])],
             'seasons.*.episodes.*.video_url' => ['nullable', 'url', 'max:2048'],
             'seasons.*.episodes.*.embed_url' => ['nullable', 'url', 'max:2048'],
@@ -611,6 +672,7 @@ class AdminSeriesController extends Controller
                 'slug' => $series->slug,
                 'title' => $series->title,
                 'publish_status' => $series->publish_status,
+                'pipeline_status' => $series->pipeline_status ?? 'idle',
                 'seasons_count' => $series->seasons()->count(),
                 'episodes_count' => $series->episodes()->count(),
             ],
@@ -649,11 +711,12 @@ class AdminSeriesController extends Controller
     {
         $genres = $localizedGenres ?? $this->resolveLocalizedGenres($validated);
         $countries = $this->normalizeStringList($validated['countries'] ?? []);
-        $primaryCountry = $this->normalizeFilterIdentifiers($countries)[0] ?? null;
+        $countryIsos = $this->countryCatalogService->resolveIsos($countries);
+        $primaryCountry = $countryIsos[0] ?? null;
 
         $this->genreCatalogService->syncSeriesGenres($series, $genres);
         $series->update([
-            'origin_country' => $primaryCountry ? strtoupper(substr($primaryCountry, 0, 2)) : null,
+            'origin_country' => $primaryCountry,
             'original_language' => filled($validated['original_language'] ?? null)
                 ? strtolower(trim((string) $validated['original_language']))
                 : null,
@@ -666,16 +729,37 @@ class AdminSeriesController extends Controller
         $this->catalogCacheService->scheduleRebuildAfterContentChange();
     }
 
+    /**
+     * @param  array<string, mixed>  $validated
+     */
+    private function applySeriesImageIngestion(Series $series, array $validated): void
+    {
+        $metadata = is_array($series->metadata) ? $series->metadata : [];
+        $imageResult = $this->contentImageIngestionService->processSeriesPrimaryImages(
+            $series,
+            $validated,
+            $metadata,
+            deferSecondaryImages: true,
+        );
+
+        $series->update([
+            'poster_url' => $imageResult['poster_url'],
+            'backdrop_url' => $imageResult['backdrop_url'],
+            'metadata' => $imageResult['metadata'],
+        ]);
+    }
+
     private function baseSeriesAttributes(array $validated, string $slug, ?array $localizedGenres = null): array
     {
         $genres = $localizedGenres ?? $this->resolveLocalizedGenres($validated);
         $countries = $this->normalizeStringList($validated['countries'] ?? []);
+        $countryIsos = $this->countryCatalogService->resolveIsos($countries);
         $primaryNetwork = $this->firstFilterValue([
             $this->nullableString($validated['network'] ?? null) ?? '',
             $this->nullableString($validated['provider_name'] ?? null) ?? '',
         ]);
         $filterGenreIds = $this->normalizeFilterIdentifiers($genres);
-        $filterCountryIds = $this->normalizeFilterIdentifiers($countries);
+        $filterCountryIds = $countryIsos;
         $filterNetworkIds = $primaryNetwork ? $this->normalizeFilterIdentifiers([$primaryNetwork]) : [];
 
         $attributes = [
@@ -713,12 +797,13 @@ class AdminSeriesController extends Controller
     {
         $genres = $localizedGenres ?? $this->resolveLocalizedGenres($validated);
         $countries = $this->normalizeStringList($validated['countries'] ?? []);
+        $countryIsos = $this->countryCatalogService->resolveIsos($countries);
         $primaryNetwork = $this->firstFilterValue([
             $this->nullableString($validated['network'] ?? null) ?? '',
             $this->nullableString($validated['provider_name'] ?? null) ?? '',
         ]);
         $filterGenreIds = $this->normalizeFilterIdentifiers($genres);
-        $filterCountryIds = $this->normalizeFilterIdentifiers($countries);
+        $filterCountryIds = $countryIsos;
         $filterNetworkIds = $primaryNetwork ? $this->normalizeFilterIdentifiers([$primaryNetwork]) : [];
 
         return [
@@ -736,8 +821,10 @@ class AdminSeriesController extends Controller
                 'genres' => $genres,
                 'tags' => $this->normalizeStringList($validated['tags'] ?? []),
                 'languages' => $this->normalizeStringList($validated['languages'] ?? []),
-                'countries' => $this->normalizeStringList($validated['countries'] ?? []),
+                'countries' => $countries,
+                'country_isos' => $countryIsos,
                 'actors' => $this->normalizeActors($validated['actors'] ?? []),
+                'synopsis_en' => $this->nullableString($validated['synopsis_en'] ?? null),
                 'exclusions' => [
                     'season_numbers' => collect($validated['tmdb_excluded_season_numbers'] ?? [])
                         ->map(fn ($value) => (int) $value)
@@ -1022,6 +1109,8 @@ class AdminSeriesController extends Controller
     private function transformSeriesListItem(Series $series): array
     {
         $series->loadMissing(['creator']);
+        $metadata = is_array($series->metadata) ? $series->metadata : [];
+        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
 
         return [
             'id' => $series->id,
@@ -1031,11 +1120,15 @@ class AdminSeriesController extends Controller
             'first_air_date' => $series->first_air_date?->toDateString(),
             'status' => $series->status,
             'network' => $series->network,
-            'poster_url' => $series->poster_url,
+            'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
             'has_subtitle' => (bool) ($series->has_subtitle ?? false),
             'has_dubbed' => (bool) ($series->has_dubbed ?? false),
             'is_featured' => $series->is_featured,
             'publish_status' => $series->publish_status,
+            'pipeline_status' => $series->pipeline_status ?? 'idle',
             'seasons_count' => (int) ($series->getAttribute('seasons_count') ?? 0),
             'episodes_count' => (int) ($series->getAttribute('episodes_count') ?? 0),
             'created_at' => $series->created_at?->toISOString(),
@@ -1059,6 +1152,12 @@ class AdminSeriesController extends Controller
 
     private function transformSeasonForList(SeriesSeason $season, bool $includeEpisodes): array
     {
+        $metadata = is_array($season->metadata) ? $season->metadata : [];
+        $posterFields = $this->imagePresentationService->enrichListImageFields(
+            $season->poster_url,
+            data_get($metadata, 'images.poster'),
+        );
+
         $payload = [
             'id' => $season->id,
             'season_number' => $season->season_number,
@@ -1066,7 +1165,10 @@ class AdminSeriesController extends Controller
             'synopsis' => $season->synopsis,
             'air_date' => $season->air_date?->toDateString(),
             'episode_count' => $season->episode_count,
-            'poster_url' => $season->poster_url,
+            'poster_url' => $posterFields['url'],
+            'poster_blur_url' => $posterFields['blur_url'],
+            'poster_srcset' => $posterFields['srcset'],
+            'poster_image' => $posterFields['image'],
         ];
 
         if ($includeEpisodes) {
@@ -1083,6 +1185,10 @@ class AdminSeriesController extends Controller
     private function transformEpisodeForList(SeriesEpisode $episode): array
     {
         $metadata = is_array($episode->metadata) ? $episode->metadata : [];
+        $stillFields = $this->imagePresentationService->enrichListImageFields(
+            $episode->still_url,
+            data_get($metadata, 'images.still'),
+        );
 
         return [
             'id' => $episode->id,
@@ -1091,7 +1197,10 @@ class AdminSeriesController extends Controller
             'title' => $episode->title,
             'slug' => $episode->slug,
             'air_date' => $episode->air_date?->toDateString(),
-            'still_url' => $episode->still_url,
+            'still_url' => $stillFields['url'],
+            'still_blur_url' => $stillFields['blur_url'],
+            'still_srcset' => $stillFields['srcset'],
+            'still_image' => $stillFields['image'],
             'source_method' => $episode->source_method,
             'video_url' => $episode->video_url,
             'embed_url' => $episode->embed_url,
@@ -1115,6 +1224,8 @@ class AdminSeriesController extends Controller
 
         $hasSubtitle = (bool) ($series->has_subtitle ?? false);
         $hasDubbed = (bool) ($series->has_dubbed ?? false);
+        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
+        $backdropImage = $this->imagePresentationService->seriesBackdropImage($metadata);
 
         $data = [
             'id' => $series->id,
@@ -1135,8 +1246,14 @@ class AdminSeriesController extends Controller
             'episodes_count' => (int) ($series->getAttribute('episodes_count') ?? 0),
             'network' => $series->network,
             'provider_name' => $series->provider_name,
-            'poster_url' => $series->poster_url,
-            'backdrop_url' => $series->backdrop_url,
+            'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
+            'backdrop_url' => $this->imagePresentationService->resolveSeriesBackdropUrl($series->backdrop_url, $metadata),
+            'backdrop_blur_url' => data_get($backdropImage, 'blur'),
+            'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
+            'backdrop_image' => $backdropImage,
             'trailer_url' => $series->trailer_url,
             'homepage_url' => data_get($metadata, 'links.homepage_url'),
             'hls_base_url' => data_get($metadata, 'playback.hls_base_url'),
@@ -1203,6 +1320,7 @@ class AdminSeriesController extends Controller
                     'tv_show_style' => data_get($metadata, 'wordpress.tv_show_style', 'default'),
                     'episode_methods' => data_get($metadata, 'wordpress.episode_methods', ['upload', 'embed', 'url', 'hls']),
                 ],
+                'images' => data_get($metadata, 'images', []),
             ],
             'created_at' => $series->created_at?->toISOString(),
             'updated_at' => $series->updated_at?->toISOString(),
@@ -1229,7 +1347,12 @@ class AdminSeriesController extends Controller
                         'person_id' => $row->person_id,
                         'name' => $row->person?->name,
                         'character' => $row->character_name,
-                        'profile_url' => $row->person?->getProfileImageUrl(),
+                        'profile_url' => $row->person
+                            ? $this->imagePresentationService->resolvePersonProfileUrl($row->person)
+                            : null,
+                        'profile_image' => $row->person
+                            ? $this->imagePresentationService->personProfileImage($row->person)
+                            : null,
                         'credit_id' => $row->tmdb_credit_id,
                         'order' => $row->cast_order,
                         'known_for_department' => $row->person?->known_for_department ?? 'Acting',
@@ -1245,7 +1368,12 @@ class AdminSeriesController extends Controller
                         'name' => $row->person?->name,
                         'job' => $row->job,
                         'department' => $row->department,
-                        'profile_url' => $row->person?->getProfileImageUrl(),
+                        'profile_url' => $row->person
+                            ? $this->imagePresentationService->resolvePersonProfileUrl($row->person)
+                            : null,
+                        'profile_image' => $row->person
+                            ? $this->imagePresentationService->personProfileImage($row->person)
+                            : null,
                         'credit_id' => $row->tmdb_credit_id,
                         'slug' => $row->person?->slug,
                     ])
@@ -1312,6 +1440,10 @@ class AdminSeriesController extends Controller
         );
         $synopsis = $synopsisFields['synopsis'];
         $synopsisEn = $synopsisFields['synopsis_en'];
+        $posterFields = $this->imagePresentationService->enrichListImageFields(
+            $season->poster_url,
+            data_get($metadata, 'images.poster'),
+        );
 
         return [
             'id' => $season->id,
@@ -1321,7 +1453,10 @@ class AdminSeriesController extends Controller
             'synopsis_en' => $synopsisEn,
             'air_date' => $season->air_date?->toDateString(),
             'episode_count' => $season->episode_count,
-            'poster_url' => $season->poster_url,
+            'poster_url' => $posterFields['url'],
+            'poster_blur_url' => $posterFields['blur_url'],
+            'poster_srcset' => $posterFields['srcset'],
+            'poster_image' => $posterFields['image'],
             'hls_base_url' => data_get($metadata, 'playback.hls_base_url'),
             'episodes' => $season->episodes
                 ->map(fn (SeriesEpisode $episode) => $this->transformEpisode($episode))
@@ -1341,6 +1476,10 @@ class AdminSeriesController extends Controller
         );
         $synopsis = $synopsisFields['synopsis'];
         $synopsisEn = $synopsisFields['synopsis_en'];
+        $stillFields = $this->imagePresentationService->enrichListImageFields(
+            $episode->still_url,
+            data_get($metadata, 'images.still'),
+        );
 
         return [
             'id' => $episode->id,
@@ -1352,7 +1491,10 @@ class AdminSeriesController extends Controller
             'synopsis_en' => $synopsisEn,
             'air_date' => $episode->air_date?->toDateString(),
             'duration_minutes' => $episode->duration_minutes,
-            'still_url' => $episode->still_url,
+            'still_url' => $stillFields['url'],
+            'still_blur_url' => $stillFields['blur_url'],
+            'still_srcset' => $stillFields['srcset'],
+            'still_image' => $stillFields['image'],
             'source_method' => $episode->source_method,
             'video_url' => $episode->video_url,
             'embed_url' => $episode->embed_url,
@@ -1504,9 +1646,20 @@ class AdminSeriesController extends Controller
                 $profileUrl = trim((string) ($actor['profile_url'] ?? ''));
 
                 return [
+                    'tmdb_person_id' => isset($actor['tmdb_person_id']) ? (int) $actor['tmdb_person_id'] : null,
                     'name' => $name,
                     'character' => $character !== '' ? $character : null,
                     'profile_url' => $profileUrl !== '' ? $profileUrl : null,
+                    'profile_image' => is_array($actor['profile_image'] ?? null) ? $actor['profile_image'] : null,
+                    'profile_source_url' => filled($actor['profile_source_url'] ?? null)
+                        ? (string) $actor['profile_source_url']
+                        : null,
+                    'credit_id' => filled($actor['credit_id'] ?? null) ? (string) $actor['credit_id'] : null,
+                    'order' => isset($actor['order']) ? (int) $actor['order'] : null,
+                    'known_for_department' => filled($actor['known_for_department'] ?? null)
+                        ? (string) $actor['known_for_department']
+                        : null,
+                    'episode_count' => isset($actor['episode_count']) ? (int) $actor['episode_count'] : null,
                 ];
             })
             ->filter()
@@ -1560,5 +1713,60 @@ class AdminSeriesController extends Controller
         }
 
         return (int) $matches[0];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function applyLocalizedContentSynopsis(array $validated, ?Series $existing = null): array
+    {
+        $metadata = $existing && is_array($existing->metadata) ? $existing->metadata : [];
+        $synopsisFields = $this->synopsisHelper->localizeContentSynopsis(
+            $this->nullableString($validated['synopsis'] ?? null),
+            $this->nullableString(
+                $validated['synopsis_en'] ?? data_get($metadata, 'tmdb.synopsis_en'),
+            ),
+        );
+
+        $validated['synopsis'] = $synopsisFields['synopsis'];
+        $validated['synopsis_en'] = $synopsisFields['synopsis_en'];
+
+        return $validated;
+    }
+
+    public function ingestTmdbImages(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'entity_id' => ['nullable', 'integer', 'exists:series,id'],
+            'poster_url' => ['nullable', 'string', 'max:2048'],
+            'backdrop_url' => ['nullable', 'string', 'max:2048'],
+            'banner_url' => ['nullable', 'string', 'max:2048'],
+            'logo_url' => ['nullable', 'string', 'max:2048'],
+            'actors' => ['nullable', 'array', 'max:50'],
+            'actors.*.profile_url' => ['nullable', 'string', 'max:2048'],
+            'seasons' => ['nullable', 'array', 'max:30'],
+            'seasons.*.season_number' => ['nullable'],
+            'seasons.*.poster_url' => ['nullable', 'string', 'max:2048'],
+            'seasons.*.episodes' => ['nullable', 'array', 'max:50'],
+            'seasons.*.episodes.*.episode_number' => ['nullable'],
+            'seasons.*.episodes.*.still_url' => ['nullable', 'string', 'max:2048'],
+        ])->validate();
+
+        $data = $this->contentImageIngestionService->ingestTmdbSyncBatch([
+            'entity_type' => 'series',
+            'entity_id' => $validated['entity_id'] ?? null,
+            'poster_url' => $validated['poster_url'] ?? null,
+            'backdrop_url' => $validated['backdrop_url'] ?? null,
+            'banner_url' => $validated['banner_url'] ?? null,
+            'logo_url' => $validated['logo_url'] ?? null,
+            'actors' => $validated['actors'] ?? [],
+            'seasons' => $validated['seasons'] ?? [],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $data,
+        ]);
     }
 }

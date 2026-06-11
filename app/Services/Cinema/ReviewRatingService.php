@@ -5,58 +5,59 @@ namespace App\Services\Cinema;
 use App\Models\Movie;
 use App\Models\Review;
 use App\Models\Series;
+use Illuminate\Support\Facades\DB;
 
 class ReviewRatingService
 {
-    public function recalculateForContent(string $type, int $id): void
+    /**
+     * @return array{
+     *   total_count: int,
+     *   average_rating: float,
+     *   distribution: array<string, int>
+     * }
+     */
+    public function summaryForContent(string $type, int $contentId): array
     {
-        $average = Review::query()
+        $rows = Review::query()
             ->approved()
-            ->forContent($type, $id)
-            ->avg('rating');
+            ->forContent($type, $contentId)
+            ->select('rating', DB::raw('COUNT(*) as count'))
+            ->groupBy('rating')
+            ->pluck('count', 'rating');
 
-        $rounded = $average !== null ? round((float) $average, 1) : null;
+        $distribution = collect(range(1, 10))
+            ->mapWithKeys(fn (int $rating) => [(string) $rating => 0])
+            ->all();
+
+        $totalCount = 0;
+        $weightedSum = 0;
+
+        foreach ($rows as $rating => $count) {
+            $ratingKey = (string) (int) $rating;
+            $countValue = (int) $count;
+            $distribution[$ratingKey] = $countValue;
+            $totalCount += $countValue;
+            $weightedSum += (int) $rating * $countValue;
+        }
+
+        return [
+            'total_count' => $totalCount,
+            'average_rating' => $totalCount > 0 ? round($weightedSum / $totalCount, 1) : 0,
+            'distribution' => $distribution,
+        ];
+    }
+
+    public function recalculateForContent(string $type, int $contentId): void
+    {
+        $summary = $this->summaryForContent($type, $contentId);
+        $average = $summary['total_count'] > 0 ? $summary['average_rating'] : null;
 
         if ($type === 'movie') {
-            Movie::query()->whereKey($id)->update(['cached_avg_rating' => $rounded]);
+            Movie::query()->whereKey($contentId)->update(['cached_avg_rating' => $average]);
 
             return;
         }
 
-        if ($type === 'series') {
-            Series::query()->whereKey($id)->update(['cached_avg_rating' => $rounded]);
-        }
-    }
-
-    /**
-     * @return array{total_count: int, average_rating: float, distribution: array<string, int>}
-     */
-    public function summaryForContent(string $type, int $id): array
-    {
-        $rows = Review::query()
-            ->approved()
-            ->forContent($type, $id)
-            ->selectRaw('rating, COUNT(*) as count')
-            ->groupBy('rating')
-            ->pluck('count', 'rating');
-
-        $distribution = [];
-        for ($i = 1; $i <= 10; $i++) {
-            $distribution[(string) $i] = (int) ($rows[$i] ?? 0);
-        }
-
-        $total = array_sum($distribution);
-        $weighted = 0;
-        foreach ($distribution as $rating => $count) {
-            $weighted += (int) $rating * $count;
-        }
-
-        $average = $total > 0 ? round($weighted / $total, 1) : 0.0;
-
-        return [
-            'total_count' => $total,
-            'average_rating' => $average,
-            'distribution' => $distribution,
-        ];
+        Series::query()->whereKey($contentId)->update(['cached_avg_rating' => $average]);
     }
 }

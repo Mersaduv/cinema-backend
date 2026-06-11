@@ -6,12 +6,16 @@ use App\Models\Movie;
 use App\Models\ProductionCountry;
 use App\Models\Series;
 use App\Models\SpokenLanguage;
+use App\Services\Cinema\EnsureTmdbReferenceDataService;
 use App\Support\CatalogGenreManifest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Cache;
 
 class FilterOptionsController extends Controller
 {
+    public function __construct(
+        private readonly EnsureTmdbReferenceDataService $referenceData,
+    ) {}
     /** @var array<int, string> */
     private const POPULAR_COUNTRY_ISOS = [
         'IR', 'US', 'GB', 'FR', 'DE', 'TR', 'IN', 'JP', 'KR', 'CN', 'CA', 'AU',
@@ -21,6 +25,8 @@ class FilterOptionsController extends Controller
     public function __invoke(): JsonResponse
     {
         $payload = Cache::remember('filter_options', 86400, function (): array {
+            $this->referenceData->ensureCountriesLoaded();
+
             return [
                 'catalog_genres' => CatalogGenreManifest::orderedForApi('movie'),
                 'movie_genres' => CatalogGenreManifest::orderedForApi('movie'),
@@ -51,6 +57,12 @@ class FilterOptionsController extends Controller
                 ],
             ];
         });
+
+        if ($payload['countries'] === []) {
+            Cache::forget('filter_options');
+            $this->referenceData->ensureCountriesLoaded();
+            $payload['countries'] = $this->sortedCountries();
+        }
 
         return response()
             ->json(['success' => true, 'data' => $payload])

@@ -53,6 +53,11 @@ class CatalogCacheService
         $this->forgetByPattern('series_catalog_*');
     }
 
+    public function forgetPublicCollectionsList(): void
+    {
+        $this->forgetByPattern('collections_list_*');
+    }
+
     public function forgetSharedReferenceData(): void
     {
         Cache::forget('filter_options');
@@ -65,6 +70,7 @@ class CatalogCacheService
         $this->forgetAdminSeriesList();
         $this->forgetPublicMoviesCatalog();
         $this->forgetPublicSeriesCatalog();
+        $this->forgetPublicCollectionsList();
         $this->forgetSharedReferenceData();
     }
 

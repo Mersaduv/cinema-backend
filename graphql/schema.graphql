@@ -96,6 +96,34 @@ type Query {
     episode: Int!
   ): EpisodeWatch!
     @field(resolver: "App\\GraphQL\\Queries\\WatchEpisodeQuery")
+
+  collectionsList(
+    page: Int
+    first: Int = 20
+    search: String
+  ): [CollectionCard!]! @paginate(builder: "App\\GraphQL\\Builders\\CollectionBuilder")
+
+  collectionOverview(slug: String!): CollectionOverview!
+    @field(resolver: "App\\GraphQL\\Queries\\CollectionOverviewQuery")
+}
+
+# ---- Responsive images (internal CDN) ----
+
+type ResponsiveSrcsetItem {
+  url: String!
+  width: Int!
+  descriptor: String!
+}
+
+type ResponsiveImage {
+  original: String
+  blur: String
+  src: String
+  srcset: [ResponsiveSrcsetItem!]
+  srcset_string: String
+  width: Int
+  height: Int
+  mime_type: String
 }
 
 # ---- Movie ----
@@ -118,7 +146,13 @@ type Movie {
   provider_name: String
   poster_path: String @deprecated(reason: "Use poster_url")
   poster_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@posterUrl")
+  poster_blur_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@posterBlurUrl")
+  poster_srcset: String @field(resolver: "App\\GraphQL\\Types\\Movie@posterSrcset")
+  poster_image: ResponsiveImage @field(resolver: "App\\GraphQL\\Types\\Movie@posterImage")
   backdrop_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@backdropUrl")
+  backdrop_blur_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@backdropBlurUrl")
+  backdrop_srcset: String @field(resolver: "App\\GraphQL\\Types\\Movie@backdropSrcset")
+  backdrop_image: ResponsiveImage @field(resolver: "App\\GraphQL\\Types\\Movie@backdropImage")
   trailer_path: String @deprecated(reason: "Use trailer_url")
   trailer_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@trailerUrl")
   has_dubbed_audio: Boolean!
@@ -197,7 +231,13 @@ type MovieCard {
 
 type MovieListMeta {
   poster_url: String
+  poster_blur_url: String
+  poster_srcset: String
+  poster_image: ResponsiveImage
   backdrop_url: String
+  backdrop_blur_url: String
+  backdrop_srcset: String
+  backdrop_image: ResponsiveImage
   genres: [String!]!
   rating: Float
 }
@@ -223,6 +263,14 @@ type SeriesCard {
 
 type SeriesListMeta {
   status_label_fa: String
+  poster_url: String
+  poster_blur_url: String
+  poster_srcset: String
+  poster_image: ResponsiveImage
+  backdrop_url: String
+  backdrop_blur_url: String
+  backdrop_srcset: String
+  backdrop_image: ResponsiveImage
   genres: [String!]!
   rating: Float
   detail_backdrop_url: String
@@ -258,7 +306,13 @@ type SeriesOverview {
   provider_name: String
   genre_tags: [GenreTag!]!
   poster_url: String
+  poster_blur_url: String
+  poster_srcset: String
+  poster_image: ResponsiveImage
   backdrop_url: String
+  backdrop_blur_url: String
+  backdrop_srcset: String
+  backdrop_image: ResponsiveImage
   trailer_url: String
   age_rating: String
   has_subtitle: Boolean!
@@ -278,6 +332,9 @@ type SeriesCastRow {
   slug: String
   character_name: String
   profile_url: String
+  profile_blur_url: String
+  profile_srcset: String
+  profile_image: ResponsiveImage
   order: Int
 }
 
@@ -287,6 +344,9 @@ type SeriesCrewRow {
   job: String
   department: String
   profile_url: String
+  profile_blur_url: String
+  profile_srcset: String
+  profile_image: ResponsiveImage
 }
 
 type SeriesSeasonRow {
@@ -314,6 +374,9 @@ type SeriesActorRow {
   name: String
   character: String
   profile_url: String
+  profile_blur_url: String
+  profile_srcset: String
+  profile_image: ResponsiveImage
 }
 
 # ---- Watch / seasons (internal models) ----
@@ -364,6 +427,7 @@ type Person {
   name: String!
   biography: String
   profile_url: String @field(resolver: "App\\GraphQL\\Types\\Person@profileUrl")
+  profile_image: ResponsiveImage @field(resolver: "App\\GraphQL\\Types\\Person@profileImage")
   known_for_department: String
 }
 
@@ -392,8 +456,10 @@ type Review {
   user: PublicUser!
   rating: Int!
   body: String
+  status: String
   created_at: String!
   is_own: Boolean!
+  is_pending: Boolean
 }
 
 type ReviewDistributionBucket {
@@ -426,15 +492,39 @@ enum ReviewSort {
   TOP_RATED
 }
 
+type CollectionCard {
+  id: ID!
+  slug: String!
+  name: String!
+  description: String
+  poster_url: String
+  backdrop_url: String
+  poster_image: ResponsiveImage
+  backdrop_image: ResponsiveImage
+  movies_count: Int!
+}
+
+type CollectionOverview {
+  id: ID!
+  slug: String!
+  name: String!
+  description: String
+  poster_url: String
+  backdrop_url: String
+  poster_image: ResponsiveImage
+  backdrop_image: ResponsiveImage
+  movies: [MovieCard!]!
+}
+
 type Mutation {
   submitReview(
     slug: String!
     reviewable_type: String!
     rating: Int!
-    body: String
+    body: String!
   ): Review! @field(resolver: "App\\GraphQL\\Mutations\\ReviewMutations@submitReview") @guard
 
-  updateReview(id: ID!, rating: Int, body: String): Review!
+  updateReview(id: ID!, rating: Int, body: String!): Review!
     @field(resolver: "App\\GraphQL\\Mutations\\ReviewMutations@updateReview")
     @guard
 

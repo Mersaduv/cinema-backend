@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\ProcessMovieImagesJob;
+use App\Jobs\SyncMovieCollectionJob;
 use App\Jobs\SyncMoviePersonCreditsJob;
 use App\Jobs\ValidateHlsManifestJob;
 use App\Models\Movie;
@@ -10,9 +12,17 @@ use App\Models\MovieCrew;
 use App\Services\Cinema\AdminCatalogSummaryService;
 use App\Services\Cinema\AdminReferenceOptionsService;
 use App\Services\Cinema\CatalogCacheService;
+use App\Services\Cinema\CollectionService;
+use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Support\CatalogListResponseMapper;
+use App\Support\CinemaSynopsisHelper;
+use App\Support\CinemaValidation;
+use App\Services\Cinema\ContentImageIngestionService;
+use App\Services\Cinema\ContentPipelineLauncher;
+use App\Services\Cinema\ContentPipelineStatusService;
+use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\MediaPathService;
 use App\Services\Cinema\MovieCleanupService;
 use App\Services\Cinema\MovieDraftUpdateService;
@@ -38,11 +48,18 @@ class AdminMovieController extends Controller
         private readonly HlsPackageInsightService $hlsPackageInsightService,
         private readonly TmdbService $tmdbService,
         private readonly GenreCatalogService $genreCatalogService,
+        private readonly CountryCatalogService $countryCatalogService,
         private readonly AdminReferenceOptionsService $adminReferenceOptionsService,
         private readonly AdminCatalogSummaryService $adminCatalogSummaryService,
         private readonly CatalogListProcedureService $catalogListProcedureService,
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
+        private readonly CollectionService $collectionService,
+        private readonly CinemaSynopsisHelper $synopsisHelper,
+        private readonly ContentImageIngestionService $contentImageIngestionService,
+        private readonly ImagePresentationService $imagePresentationService,
+        private readonly ContentPipelineLauncher $contentPipelineLauncher,
+        private readonly ContentPipelineStatusService $contentPipelineStatusService,
     ) {
     }
 
@@ -313,10 +330,12 @@ class AdminMovieController extends Controller
             'slug' => ['required', 'string', 'max:255', Rule::unique('movies', 'slug')->ignore($movie->id)],
             'original_title' => ['nullable', 'string', 'max:255'],
             'poster_path' => ['nullable', 'string', 'max:2048'],
-            'poster_url' => ['nullable', 'url', 'max:2048'],
+            'poster_url' => CinemaValidation::nullableImageOrUrl(),
             'trailer_path' => ['nullable', 'string', 'max:2048'],
             'trailer_url' => ['nullable', 'url', 'max:2048'],
-            'backdrop_url' => ['nullable', 'url', 'max:2048'],
+            'backdrop_url' => CinemaValidation::nullableImageOrUrl(),
+            'banner_url' => CinemaValidation::nullableImageOrUrl(),
+            'logo_url' => CinemaValidation::nullableImageOrUrl(),
             'synopsis' => ['nullable', 'string'],
             'age_rating' => ['nullable', 'string', 'max:50'],
             'release_year' => ['nullable', 'integer', 'between:1888,2100'],
@@ -345,7 +364,7 @@ class AdminMovieController extends Controller
             'actors' => ['nullable', 'array'],
             'actors.*.name' => ['required_with:actors', 'string', 'max:255'],
             'actors.*.character' => ['nullable', 'string', 'max:255'],
-            'actors.*.profile_url' => ['nullable', 'url', 'max:2048'],
+            'actors.*.profile_url' => CinemaValidation::nullableImageOrUrl(),
             'hls_url' => ['nullable', 'string', 'max:2048'],
             'download_links' => ['nullable', 'array'],
             'download_links.*' => ['nullable', 'string', 'max:2048'],
@@ -367,6 +386,14 @@ class AdminMovieController extends Controller
             'crew.*.department' => ['nullable', 'string', 'max:255'],
             'crew.*.profile_url' => ['nullable', 'string', 'max:2048'],
             'crew.*.credit_id' => ['nullable', 'string', 'max:100'],
+            'publish_status' => ['nullable', Rule::in(['draft', 'scheduled', 'published'])],
+            'scheduled_for' => ['nullable', 'string', 'max:32'],
+            'belongs_to_collection' => ['nullable', 'array'],
+            'belongs_to_collection.tmdb_collection_id' => ['nullable', 'integer', 'min:1'],
+            'belongs_to_collection.id' => ['nullable', 'integer', 'min:1'],
+            'belongs_to_collection.name' => ['nullable', 'string', 'max:255'],
+            'belongs_to_collection.poster_url' => CinemaValidation::nullableImageOrUrl(),
+            'belongs_to_collection.backdrop_url' => CinemaValidation::nullableImageOrUrl(),
         ])->validate();
 
         try {
@@ -459,9 +486,10 @@ class AdminMovieController extends Controller
         $primaryNetwork = $this->firstFilterValue([
             (string) ($validated['provider_name'] ?? ''),
         ]);
-        $filterIds = $this->buildFilterIdentifiers($genres, $countries, $primaryNetwork);
+        $countryIsos = $this->countryCatalogService->resolveIsos($countries);
+        $filterIds = $this->buildFilterIdentifiers($genres, $countryIsos, $primaryNetwork);
         $primaryGenre = $filterIds['genre_ids'][0] ?? null;
-        $primaryCountry = $filterIds['country_ids'][0] ?? null;
+        $primaryCountry = $countryIsos[0] ?? null;
         $primaryNetworkId = $filterIds['network_ids'][0] ?? null;
         $actors = collect($validated['actors'] ?? [])
             ->map(function (array $actor) {
@@ -492,6 +520,11 @@ class AdminMovieController extends Controller
                 ->all();
         }
 
+        $synopsisFields = $this->synopsisHelper->localizeContentSynopsis(
+            $validated['synopsis'] ?? null,
+            data_get($existingMetadata, 'tmdb.synopsis_en'),
+        );
+
         $metadata = array_replace_recursive($existingMetadata, [
             'tmdb' => array_replace(
                 is_array($existingMetadata['tmdb'] ?? null) ? $existingMetadata['tmdb'] : [],
@@ -518,7 +551,12 @@ class AdminMovieController extends Controller
                     'tags' => $tags,
                     'languages' => $languages,
                     'countries' => $countries,
+                    'country_isos' => $countryIsos,
                     'actors' => $actors,
+                    'synopsis_en' => $synopsisFields['synopsis_en'],
+                    'belongs_to_collection' => $this->normalizeBelongsToCollectionPayload(
+                        $validated['belongs_to_collection'] ?? data_get($existingMetadata, 'tmdb.belongs_to_collection'),
+                    ),
                 ],
                 $this->optionalPublicationMediaMetadata($validated),
             ),
@@ -533,6 +571,14 @@ class AdminMovieController extends Controller
             ],
         ]);
 
+        $imageResult = $this->contentImageIngestionService->processMoviePublication(
+            $movie,
+            $validated,
+            $metadata,
+            deferSecondaryImages: true,
+        );
+        $metadata = $imageResult['metadata'];
+
         $movieUpdate = [
             'title' => $validated['title'],
             'slug' => $validated['slug'],
@@ -543,7 +589,7 @@ class AdminMovieController extends Controller
             'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
             'poster_path' => $posterPath,
             'trailer_path' => $trailerPath,
-            'synopsis' => $validated['synopsis'] ?? null,
+            'synopsis' => $synopsisFields['synopsis'],
             'age_rating' => $validated['age_rating'] ?? null,
             'release_year' => $validated['release_year'] ?? null,
             'cast_members' => $castMembers,
@@ -570,8 +616,21 @@ class AdminMovieController extends Controller
         $movie->update($movieUpdate);
 
         $this->genreCatalogService->syncMovieGenres($movie, $genres);
+
+        $collectionData = data_get($metadata, 'tmdb.belongs_to_collection');
+        if (is_array($collectionData) && $collectionData !== []) {
+            $this->collectionService->linkMovieQuick($collectionData, $movie->id);
+            $this->catalogCacheService->forgetPublicCollectionsList();
+        }
+
+        SyncMovieCollectionJob::dispatch(
+            $movie->id,
+            $metadata,
+            isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
+        )->afterResponse();
+
         $movie->update([
-            'origin_country' => $primaryCountry ? strtoupper(substr($primaryCountry, 0, 2)) : null,
+            'origin_country' => $primaryCountry,
             'original_language' => filled($validated['original_language'] ?? null)
                 ? strtolower(trim((string) $validated['original_language']))
                 : (is_string(data_get($metadata, 'tmdb.original_language'))
@@ -614,31 +673,49 @@ class AdminMovieController extends Controller
         }
 
         $movie->refresh();
-        $this->queueMovieCreditsSync($movie->id, $validated);
 
-        if ($shouldValidateHlsAsync && filled($canonicalHlsUrl)) {
-            ValidateHlsManifestJob::dispatch(
-                $movie->id,
-                (string) $manualHlsUrlRaw,
-                $subtitleSourcePath,
-            )->afterResponse();
-        }
+        $pipelineStatus = $this->contentPipelineLauncher->launchForMovie(
+            $movie,
+            $validated,
+            $imageResult,
+            (int) ($request->user()?->id ?? 0),
+            $shouldValidateHlsAsync,
+            $hlsUrlUnchanged,
+            $canonicalHlsUrl,
+            (string) $manualHlsUrlRaw,
+            $subtitleSourcePath,
+        );
+
+        $movie = $movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator']);
 
         $this->invalidateAdminMoviesListCache();
 
+        $openedPipeline = in_array($pipelineStatus, ['pending', 'running'], true);
+
         return response()->json([
             'success' => true,
-            'message' => $shouldValidateHlsAsync
-                ? 'Publication form saved. HLS manifest validation is running in the background.'
-                : ($hlsUrlUnchanged
-                    ? 'Publication form saved successfully.'
+            'message' => $openedPipeline
+                ? 'محتوا در حال پردازش است. پس از تکمیل، منتشر خواهد شد.'
+                : ($shouldValidateHlsAsync
+                    ? 'Publication form saved. HLS manifest validation is running in the background.'
                     : 'Publication form saved successfully.'),
+            'pipeline_status' => $pipelineStatus,
             'data' => [
-                'movie' => $this->transformMovie(
-                    $movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator']),
-                    true
-                ),
+                'movie' => $this->transformMovie($movie, true),
             ],
+        ]);
+    }
+
+    public function getPipeline(Movie $movie): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => $this->contentPipelineStatusService->buildResponse(
+                'movie',
+                $movie->id,
+                (string) ($movie->pipeline_status ?? 'idle'),
+                (string) $movie->publish_status,
+            ),
         ]);
     }
 
@@ -850,6 +927,13 @@ class AdminMovieController extends Controller
             $movie->published_at,
         );
 
+        if (in_array($movie->pipeline_status, ['pending', 'running'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Content processing pipeline is still running. Please wait until it completes.',
+            ], 422);
+        }
+
         if ($publishState['publish_status'] === 'published' && ! in_array($movie->processing_status, ['ready'], true)) {
             return response()->json([
                 'success' => false,
@@ -866,6 +950,10 @@ class AdminMovieController extends Controller
             'scheduled_for' => $publishState['scheduled_for'],
             'published_at' => $publishState['published_at'],
         ]);
+
+        if ($publishState['publish_status'] === 'published') {
+            $this->catalogCacheService->forgetPublicCollectionsList();
+        }
 
         $this->invalidateAdminMoviesListCache();
         $publishScheduleService->syncScheduledPublishRunner($movie->fresh());
@@ -925,7 +1013,14 @@ class AdminMovieController extends Controller
             'duration_seconds' => $movie->duration_seconds,
             'provider_name' => $movie->provider_name,
             'poster_path' => $movie->poster_path,
-            'poster_url' => $this->resolveManagedOrExternalUrl($movie->poster_path, data_get($metadata, 'tmdb.poster_url')),
+            'poster_url' => $this->imagePresentationService->resolveMoviePosterUrl($movie->poster_path, $metadata),
+            'poster_blur_url' => data_get($this->imagePresentationService->moviePosterImage($metadata), 'blur'),
+            'poster_srcset' => data_get($this->imagePresentationService->moviePosterImage($metadata), 'srcset_string'),
+            'poster_image' => $this->imagePresentationService->moviePosterImage($metadata),
+            'backdrop_url' => $this->imagePresentationService->resolveMovieBackdropUrl($metadata),
+            'backdrop_blur_url' => data_get($this->imagePresentationService->movieBackdropImage($metadata), 'blur'),
+            'backdrop_srcset' => data_get($this->imagePresentationService->movieBackdropImage($metadata), 'srcset_string'),
+            'backdrop_image' => $this->imagePresentationService->movieBackdropImage($metadata),
             'trailer_path' => $movie->trailer_path,
             'trailer_url' => $this->resolveManagedOrExternalUrl($movie->trailer_path, data_get($metadata, 'tmdb.trailer_url')),
             'has_dubbed_audio' => $movie->has_dubbed_audio,
@@ -978,6 +1073,7 @@ class AdminMovieController extends Controller
                 })->values()->all()
                 : [],
             'publish_status' => $movie->publish_status,
+            'pipeline_status' => $movie->pipeline_status ?? 'idle',
             'processing_status' => $movie->processing_status,
             'processing_error' => $movie->processing_error,
             'scheduled_for' => app(PublishScheduleService::class)->formatScheduleForApi($movie->scheduled_for),
@@ -990,7 +1086,13 @@ class AdminMovieController extends Controller
                     'tmdb_id' => data_get($metadata, 'tmdb.tmdb_id'),
                     'imdb_id' => data_get($metadata, 'tmdb.imdb_id'),
                     'poster_url' => data_get($metadata, 'tmdb.poster_url'),
+                    'poster_source_url' => data_get($metadata, 'tmdb.poster_source_url'),
                     'backdrop_url' => data_get($metadata, 'tmdb.backdrop_url'),
+                    'backdrop_source_url' => data_get($metadata, 'tmdb.backdrop_source_url'),
+                    'banner_url' => data_get($metadata, 'tmdb.banner_url'),
+                    'banner_source_url' => data_get($metadata, 'tmdb.banner_source_url'),
+                    'logo_url' => data_get($metadata, 'tmdb.logo_url'),
+                    'logo_source_url' => data_get($metadata, 'tmdb.logo_source_url'),
                     'trailer_url' => data_get($metadata, 'tmdb.trailer_url'),
                     'rating' => data_get($metadata, 'tmdb.rating'),
                     'original_language' => data_get($metadata, 'tmdb.original_language'),
@@ -1013,6 +1115,7 @@ class AdminMovieController extends Controller
                     'hls_url' => data_get($metadata, 'playback.hls_url'),
                     'downloads' => data_get($metadata, 'playback.downloads', []),
                 ],
+                'images' => data_get($metadata, 'images', []),
             ],
             'created_at' => $movie->created_at?->toISOString(),
             'updated_at' => $movie->updated_at?->toISOString(),
@@ -1086,6 +1189,7 @@ class AdminMovieController extends Controller
             'has_dubbed_audio' => $movie->has_dubbed_audio,
             'has_subtitle' => $movie->has_subtitle,
             'publish_status' => $movie->publish_status,
+            'pipeline_status' => $movie->pipeline_status ?? 'idle',
             'processing_status' => $movie->processing_status,
             'processing_error' => $movie->processing_error,
             'created_at' => $movie->created_at?->toISOString(),
@@ -1122,11 +1226,33 @@ class AdminMovieController extends Controller
      * @param  array<string, mixed>  $validated
      * @return array<string, string|null>
      */
+    /**
+     * @return ?array<string, mixed>
+     */
+    private function normalizeBelongsToCollectionPayload(mixed $raw): ?array
+    {
+        if (! is_array($raw) || empty($raw)) {
+            return null;
+        }
+
+        $tmdbCollectionId = (int) ($raw['tmdb_collection_id'] ?? $raw['id'] ?? 0);
+        if ($tmdbCollectionId <= 0) {
+            return null;
+        }
+
+        return [
+            'tmdb_collection_id' => $tmdbCollectionId,
+            'name' => filled($raw['name'] ?? null) ? (string) $raw['name'] : null,
+            'poster_url' => $raw['poster_url'] ?? null,
+            'backdrop_url' => $raw['backdrop_url'] ?? null,
+        ];
+    }
+
     private function optionalPublicationMediaMetadata(array $validated): array
     {
         $media = [];
 
-        foreach (['poster_url', 'backdrop_url', 'trailer_url'] as $field) {
+        foreach (['poster_url', 'backdrop_url', 'banner_url', 'logo_url', 'trailer_url'] as $field) {
             if (!array_key_exists($field, $validated)) {
                 continue;
             }
@@ -1156,14 +1282,17 @@ class AdminMovieController extends Controller
 
     /**
      * @param  array<int, string>  $genres
-     * @param  array<int, string>  $countries
+     * @param  array<int, string>  $countryIsos
      * @return array{genre_ids: array<int, string>, country_ids: array<int, string>, network_ids: array<int, string>}
      */
-    private function buildFilterIdentifiers(array $genres, array $countries, ?string $network): array
+    private function buildFilterIdentifiers(array $genres, array $countryIsos, ?string $network): array
     {
         return [
             'genre_ids' => $this->normalizeFilterIdentifiers($genres),
-            'country_ids' => $this->normalizeFilterIdentifiers($countries),
+            'country_ids' => array_values(array_unique(array_map(
+                fn (string $iso) => strtoupper($iso),
+                $countryIsos,
+            ))),
             'network_ids' => $network ? $this->normalizeFilterIdentifiers([$network]) : [],
         ];
     }
@@ -1187,6 +1316,34 @@ class AdminMovieController extends Controller
             ->unique()
             ->values()
             ->all();
+    }
+
+    public function ingestTmdbImages(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'entity_id' => ['nullable', 'integer', 'exists:movies,id'],
+            'poster_url' => ['nullable', 'string', 'max:2048'],
+            'backdrop_url' => ['nullable', 'string', 'max:2048'],
+            'banner_url' => ['nullable', 'string', 'max:2048'],
+            'logo_url' => ['nullable', 'string', 'max:2048'],
+            'actors' => ['nullable', 'array', 'max:50'],
+            'actors.*.profile_url' => ['nullable', 'string', 'max:2048'],
+        ])->validate();
+
+        $data = $this->contentImageIngestionService->ingestTmdbSyncBatch([
+            'entity_type' => 'movie',
+            'entity_id' => $validated['entity_id'] ?? null,
+            'poster_url' => $validated['poster_url'] ?? null,
+            'backdrop_url' => $validated['backdrop_url'] ?? null,
+            'banner_url' => $validated['banner_url'] ?? null,
+            'logo_url' => $validated['logo_url'] ?? null,
+            'actors' => $validated['actors'] ?? [],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $data,
+        ]);
     }
 
 }

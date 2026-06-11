@@ -6,100 +6,102 @@ use App\Models\Movie;
 use App\Models\Review;
 use App\Models\Series;
 use App\Models\User;
-use Illuminate\Support\Facades\Auth;
+use App\Services\Cinema\ReviewPresentationService;
+use App\Support\ReviewValidation;
+use GraphQL\Error\Error;
+use Illuminate\Support\Facades\Validator;
+use Nuwave\Lighthouse\Support\Contracts\GraphQLContext;
 
 class ReviewMutations
 {
+    public function __construct(
+        private readonly ReviewPresentationService $reviewPresentationService,
+    ) {
+    }
+
     /**
      * @param  array<string, mixed>  $args
      * @return array<string, mixed>
      */
-    public function submitReview(null $_, array $args): array
+    public function submitReview(mixed $root, array $args, GraphQLContext $context): array
     {
-        $user = Auth::user();
+        $user = $this->authUser($context);
 
-        if (! $user instanceof User || $user->status === 'banned') {
-            throw new \GraphQL\Error\Error('Unauthorized');
-        }
+        $validated = Validator::make($args, [
+            'slug' => ['required', 'string', 'max:255'],
+            'reviewable_type' => ['required', 'in:movie,series'],
+            'rating' => ['required', 'integer', 'between:1,10'],
+            'body' => ReviewValidation::submitRules()['body'],
+        ])->validate();
 
-        $type = (string) $args['reviewable_type'];
-        $slug = (string) $args['slug'];
-        $rating = (int) $args['rating'];
-        $body = filled($args['body'] ?? null) ? strip_tags((string) $args['body']) : null;
-
-        $content = $type === 'movie'
-            ? Movie::query()->where('slug', $slug)->where('publish_status', 'published')->firstOrFail()
-            : Series::query()->where('slug', $slug)->where('publish_status', 'published')->firstOrFail();
+        $content = $this->resolvePublishedContent(
+            $validated['reviewable_type'],
+            $validated['slug'],
+        );
 
         $existing = Review::query()
             ->where('user_id', $user->id)
-            ->forContent($type, $content->id)
+            ->forContent($validated['reviewable_type'], $content->id)
             ->first();
 
         if ($existing) {
-            throw new \GraphQL\Error\Error('Duplicate review');
+            throw new Error('شما قبلاً برای این عنوان نظر ثبت کرده‌اید.');
         }
 
         $review = Review::query()->create([
-            'reviewable_type' => $type,
+            'reviewable_type' => $validated['reviewable_type'],
             'reviewable_id' => $content->id,
             'user_id' => $user->id,
-            'rating' => $rating,
-            'body' => $body,
-            'is_approved' => true,
+            'rating' => (int) $validated['rating'],
+            'body' => ReviewValidation::sanitizeBody($validated['body']),
+            'status' => Review::STATUS_PENDING,
+            'is_approved' => false,
         ]);
 
         $review->load('user');
 
-        return $this->transform($review, $user);
+        return $this->reviewPresentationService->transform($review, $user);
     }
 
     /**
      * @param  array<string, mixed>  $args
      * @return array<string, mixed>
      */
-    public function updateReview(null $_, array $args): array
+    public function updateReview(mixed $root, array $args, GraphQLContext $context): array
     {
-        $user = Auth::user();
+        $user = $this->authUser($context);
 
-        if (! $user instanceof User) {
-            throw new \GraphQL\Error\Error('Unauthorized');
-        }
-
-        $review = Review::query()->findOrFail((int) $args['id']);
+        $review = Review::query()->with('user')->findOrFail((int) $args['id']);
 
         if ((int) $review->user_id !== (int) $user->id) {
-            throw new \GraphQL\Error\Error('Forbidden');
+            throw new Error('دسترسی مجاز نیست.');
         }
+
+        $validated = Validator::make($args, [
+            'rating' => ReviewValidation::updateRules()['rating'],
+            'body' => ReviewValidation::updateRules()['body'],
+        ])->validate();
 
         $review->update([
-            'rating' => array_key_exists('rating', $args) ? (int) $args['rating'] : $review->rating,
-            'body' => array_key_exists('body', $args)
-                ? (filled($args['body']) ? strip_tags((string) $args['body']) : null)
+            'rating' => array_key_exists('rating', $validated) ? (int) $validated['rating'] : $review->rating,
+            'body' => array_key_exists('body', $validated)
+                ? ReviewValidation::sanitizeBody($validated['body'])
                 : $review->body,
-            'is_approved' => true,
+            'status' => Review::STATUS_PENDING,
+            'is_approved' => false,
+            'moderated_at' => null,
         ]);
 
-        $review->load('user');
-
-        return $this->transform($review, $user);
+        return $this->reviewPresentationService->transform($review->fresh('user'), $user);
     }
 
-    /**
-     * @param  array<string, mixed>  $args
-     */
-    public function deleteReview(null $_, array $args): bool
+    public function deleteReview(mixed $root, array $args, GraphQLContext $context): bool
     {
-        $user = Auth::user();
-
-        if (! $user instanceof User) {
-            throw new \GraphQL\Error\Error('Unauthorized');
-        }
-
+        $user = $this->authUser($context);
         $review = Review::query()->findOrFail((int) $args['id']);
 
         if ((int) $review->user_id !== (int) $user->id) {
-            throw new \GraphQL\Error\Error('Forbidden');
+            throw new Error('دسترسی مجاز نیست.');
         }
 
         $review->delete();
@@ -107,22 +109,29 @@ class ReviewMutations
         return true;
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    private function transform(Review $review, User $user): array
+    private function authUser(GraphQLContext $context): User
     {
-        return [
-            'id' => (string) $review->id,
-            'user' => [
-                'id' => (string) $review->user->id,
-                'name' => $review->user->name,
-                'avatar_url' => null,
-            ],
-            'rating' => (int) $review->rating,
-            'body' => $review->body,
-            'created_at' => $review->created_at?->toISOString(),
-            'is_own' => (int) $review->user_id === (int) $user->id,
-        ];
+        $user = $context->user();
+
+        if (! $user instanceof User || $user->status === 'banned') {
+            throw new Error('برای ثبت نظر باید وارد حساب شوید.');
+        }
+
+        return $user;
+    }
+
+    private function resolvePublishedContent(string $type, string $slug): Movie|Series
+    {
+        if ($type === 'movie') {
+            return Movie::query()
+                ->where('slug', $slug)
+                ->where('publish_status', 'published')
+                ->firstOrFail();
+        }
+
+        return Series::query()
+            ->where('slug', $slug)
+            ->where('publish_status', 'published')
+            ->firstOrFail();
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services\Cinema;
 
+use App\Models\Person;
 use App\Models\Series;
 use App\Models\SeriesCast;
 use App\Models\SeriesCrew;
@@ -17,7 +18,33 @@ class SeriesPublicPresenter
     public function __construct(
         private readonly TmdbService $tmdbService,
         private readonly GenreCatalogService $genreCatalogService,
+        private readonly ImagePresentationService $imagePresentationService,
     ) {}
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function listMeta(Series $series): array
+    {
+        $metadata = is_array($series->metadata) ? $series->metadata : [];
+        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
+        $backdropImage = $this->imagePresentationService->seriesBackdropImage($metadata);
+
+        return [
+            'status_label_fa' => $this->statusLabelFa($series->status),
+            'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
+            'backdrop_url' => $this->imagePresentationService->resolveSeriesBackdropUrl($series->backdrop_url, $metadata),
+            'backdrop_blur_url' => data_get($backdropImage, 'blur'),
+            'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
+            'backdrop_image' => $backdropImage,
+            'genres' => $this->genres($series),
+            'rating' => $this->rating($series),
+            'detail_backdrop_url' => $this->detailBackdropUrl($series),
+        ];
+    }
 
     /**
      * Full overview for detail page — built once per request (no GraphQL @hasMany fan-out).
@@ -28,6 +55,8 @@ class SeriesPublicPresenter
     {
         $metadata = is_array($series->metadata) ? $series->metadata : [];
         $details = $this->details($series);
+        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
+        $backdropImage = $this->imagePresentationService->seriesBackdropImage($metadata);
 
         return [
             'id' => (string) $series->id,
@@ -53,8 +82,14 @@ class SeriesPublicPresenter
                 ])
                 ->values()
                 ->all(),
-            'poster_url' => $series->poster_url,
-            'backdrop_url' => $series->backdrop_url,
+            'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
+            'backdrop_url' => $this->imagePresentationService->resolveSeriesBackdropUrl($series->backdrop_url, $metadata),
+            'backdrop_blur_url' => data_get($backdropImage, 'blur'),
+            'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
+            'backdrop_image' => $backdropImage,
             'trailer_url' => $series->trailer_url,
             'age_rating' => $series->age_rating,
             'has_subtitle' => $this->hasSubtitle($series),
@@ -167,6 +202,9 @@ class SeriesPublicPresenter
      */
     private function castRows(Series $series): array
     {
+        $metadata = is_array($series->metadata) ? $series->metadata : [];
+        $metadataActors = $this->metadataActorLookup($metadata);
+
         $rows = $series->relationLoaded('castMembers')
             ? $series->castMembers
             : $series->castMembers()->with('person')->get();
@@ -174,13 +212,32 @@ class SeriesPublicPresenter
         return $rows
             ->sortBy('cast_order')
             ->values()
-            ->map(fn (SeriesCast $row) => [
-                'name' => $row->person?->name,
-                'slug' => $row->person?->slug,
-                'character_name' => $row->character_name,
-                'profile_url' => $row->person?->getProfileImageUrl(),
-                'order' => $row->cast_order,
-            ])
+            ->map(function (SeriesCast $row) use ($metadataActors) {
+                $person = $row->person;
+                $profileImage = $person ? $this->imagePresentationService->personProfileImage($person) : null;
+                $profileUrl = $person
+                    ? $this->imagePresentationService->resolvePersonProfileUrl($person)
+                    : null;
+
+                $metadataActor = $this->matchMetadataActor($metadataActors, $row, $person);
+                $metadataProfile = $this->resolveMetadataActorProfile($metadataActor);
+
+                if ($metadataProfile !== null) {
+                    $profileUrl = $metadataProfile['profile_url'] ?? $profileUrl;
+                    $profileImage = $metadataProfile['profile_image'] ?? $profileImage;
+                }
+
+                return [
+                    'name' => $person?->name,
+                    'slug' => $person?->slug,
+                    'character_name' => $row->character_name,
+                    'profile_url' => $profileUrl,
+                    'profile_blur_url' => data_get($profileImage, 'blur'),
+                    'profile_srcset' => data_get($profileImage, 'srcset_string'),
+                    'profile_image' => $profileImage,
+                    'order' => $row->cast_order,
+                ];
+            })
             ->all();
     }
 
@@ -199,7 +256,12 @@ class SeriesPublicPresenter
                 'slug' => $row->person?->slug,
                 'job' => $row->job,
                 'department' => $row->department,
-                'profile_url' => $row->person?->getProfileImageUrl(),
+                'profile_url' => $row->person
+                    ? $this->imagePresentationService->resolvePersonProfileUrl($row->person)
+                    : null,
+                'profile_blur_url' => data_get($row->person ? $this->imagePresentationService->personProfileImage($row->person) : null, 'blur'),
+                'profile_srcset' => data_get($row->person ? $this->imagePresentationService->personProfileImage($row->person) : null, 'srcset_string'),
+                'profile_image' => $row->person ? $this->imagePresentationService->personProfileImage($row->person) : null,
             ])
             ->values()
             ->all();
@@ -216,6 +278,9 @@ class SeriesPublicPresenter
                 'name' => $row['name'] ?? null,
                 'character' => $row['character_name'] ?? null,
                 'profile_url' => $row['profile_url'] ?? null,
+                'profile_blur_url' => $row['profile_blur_url'] ?? null,
+                'profile_srcset' => $row['profile_srcset'] ?? null,
+                'profile_image' => $row['profile_image'] ?? null,
             ]);
 
         if ($fromCast->isNotEmpty()) {
@@ -224,19 +289,133 @@ class SeriesPublicPresenter
 
         return collect(data_get($metadata, 'tmdb.actors', []))
             ->filter(fn ($actor) => is_array($actor))
-            ->map(fn (array $actor) => [
-                'name' => $actor['name'] ?? null,
-                'character' => $actor['character'] ?? null,
-                'profile_url' => $actor['profile_url'] ?? null,
-            ])
+            ->map(function (array $actor) {
+                $profile = $this->resolveMetadataActorProfile($actor);
+
+                return [
+                    'name' => $actor['name'] ?? null,
+                    'character' => $actor['character'] ?? null,
+                    'profile_url' => $profile['profile_url'] ?? null,
+                    'profile_blur_url' => data_get($profile['profile_image'] ?? null, 'blur'),
+                    'profile_srcset' => data_get($profile['profile_image'] ?? null, 'srcset_string'),
+                    'profile_image' => $profile['profile_image'] ?? null,
+                ];
+            })
             ->values()
             ->all();
     }
 
     /**
      * @param  array<string, mixed>  $metadata
+     * @return array<string, array<string, mixed>>
+     */
+    private function metadataActorLookup(array $metadata): array
+    {
+        $lookup = [];
+
+        foreach (data_get($metadata, 'tmdb.actors', []) as $actor) {
+            if (! is_array($actor)) {
+                continue;
+            }
+
+            $tmdbPersonId = $actor['tmdb_person_id'] ?? null;
+
+            if (is_numeric($tmdbPersonId) && (int) $tmdbPersonId > 0) {
+                $lookup['person:' . (int) $tmdbPersonId] = $actor;
+            }
+
+            $creditId = trim((string) ($actor['credit_id'] ?? ''));
+
+            if ($creditId !== '') {
+                $lookup['credit:' . $creditId] = $actor;
+            }
+
+            $name = trim((string) ($actor['name'] ?? ''));
+
+            if ($name !== '') {
+                $lookup['name:' . mb_strtolower($name)] = $actor;
+            }
+        }
+
+        return $lookup;
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $metadataActors
+     * @return ?array<string, mixed>
+     */
+    private function matchMetadataActor(array $metadataActors, SeriesCast $row, ?Person $person): ?array
+    {
+        $tmdbPersonId = (int) ($person?->tmdb_person_id ?? 0);
+
+        if ($tmdbPersonId > 0 && isset($metadataActors['person:' . $tmdbPersonId])) {
+            return $metadataActors['person:' . $tmdbPersonId];
+        }
+
+        $creditId = trim((string) ($row->tmdb_credit_id ?? ''));
+
+        if ($creditId !== '' && isset($metadataActors['credit:' . $creditId])) {
+            return $metadataActors['credit:' . $creditId];
+        }
+
+        $name = trim((string) ($person?->name ?? ''));
+
+        if ($name !== '' && isset($metadataActors['name:' . mb_strtolower($name)])) {
+            return $metadataActors['name:' . mb_strtolower($name)];
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  ?array<string, mixed>  $actor
+     * @return ?array{profile_url: ?string, profile_image: ?array<string, mixed>}
+     */
+    private function resolveMetadataActorProfile(?array $actor): ?array
+    {
+        if ($actor === null) {
+            return null;
+        }
+
+        $storedImage = is_array($actor['profile_image'] ?? null) ? $actor['profile_image'] : null;
+        $fallbackUrl = $actor['profile_url'] ?? null;
+        $profileImage = $this->imagePresentationService->personProfileImageFromStored(
+            $storedImage,
+            $this->managedImageUrl($fallbackUrl),
+        );
+        $profileUrl = data_get($profileImage, 'original')
+            ?? $this->managedImageUrl($fallbackUrl);
+
+        if ($profileUrl === null && $profileImage === null) {
+            return null;
+        }
+
+        return [
+            'profile_url' => $profileUrl,
+            'profile_image' => $profileImage,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
      * @return list<string>
      */
+    private function managedImageUrl(mixed $url): ?string
+    {
+        if (! filled($url)) {
+            return null;
+        }
+
+        $url = trim((string) $url);
+        $prefix = '/' . trim((string) config('cinema_images.public_prefix', '/images'), '/');
+
+        if (! str_starts_with($url, $prefix . '/') && $url !== $prefix) {
+            return null;
+        }
+
+        return $url;
+    }
+
     private function gallery(Series $series, array $metadata): array
     {
         return collect([

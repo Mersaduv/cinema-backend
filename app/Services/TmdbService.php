@@ -205,6 +205,12 @@ class TmdbService
             }
         }
 
+        $localizedSynopsis = $this->localizeMainSynopsis(
+            "/movie/{$tmdbId}",
+            $payload,
+            $fallbackPayload,
+        );
+
         return [
             'tmdb_id' => $payload['id'] ?? $fallbackPayload['id'] ?? null,
             'imdb_id' => $this->firstFilledString(
@@ -226,10 +232,8 @@ class TmdbService
                 $fallbackPayload['title'] ?? null
             ),
             'original_language' => $payload['original_language'] ?? $fallbackPayload['original_language'] ?? null,
-            'synopsis' => $this->firstFilledString(
-                $payload['overview'] ?? null,
-                $fallbackPayload['overview'] ?? null
-            ),
+            'synopsis' => $localizedSynopsis['synopsis'],
+            'synopsis_en' => $localizedSynopsis['synopsis_en'],
             'poster_url' => $this->buildImageUrl($payload['poster_path'] ?? $fallbackPayload['poster_path'] ?? null, 'w780'),
             'backdrop_url' => $this->buildImageUrl($payload['backdrop_path'] ?? $fallbackPayload['backdrop_path'] ?? null, 'original'),
             'trailer_url' => $this->resolveTrailerUrl(
@@ -278,7 +282,7 @@ class TmdbService
                 'character' => $item['character'] ?? null,
                 'profile_url' => $this->buildImageUrl($item['profile_path'] ?? null, 'w300'),
             ])->values()->all(),
-            'overview' => $this->firstFilledString(
+            'overview' => $localizedSynopsis['synopsis'] ?? $this->firstFilledString(
                 $payload['overview'] ?? null,
                 $fallbackPayload['overview'] ?? null
             ),
@@ -346,6 +350,75 @@ class TmdbService
                 ->filter(fn (array $row) => $row['name'] !== '')
                 ->values()
                 ->all(),
+            'belongs_to_collection' => $this->mapBelongsToCollection(
+                $payload['belongs_to_collection'] ?? $fallbackPayload['belongs_to_collection'] ?? null
+            ),
+        ];
+    }
+
+    /**
+     * Lightweight TMDB lookup — only belongs_to_collection (no credits/images append).
+     *
+     * @return ?array<string, mixed>
+     */
+    public function fetchMovieBelongsToCollection(int $tmdbId, ?string $language = null): ?array
+    {
+        if ($tmdbId <= 0) {
+            return null;
+        }
+
+        $language = $this->resolveLanguage($language);
+        $payload = $this->request("/movie/{$tmdbId}", [
+            'language' => $language,
+        ]);
+
+        return $this->mapBelongsToCollection($payload['belongs_to_collection'] ?? null);
+    }
+
+    public function fetchCollection(int $tmdbCollectionId, ?string $language = null): array
+    {
+        if ($tmdbCollectionId <= 0) {
+            throw new InvalidArgumentException('A valid TMDB collection ID is required.');
+        }
+
+        $language = $this->resolveLanguage($language);
+        $payload = $this->request("/collection/{$tmdbCollectionId}", [
+            'language' => $language,
+        ]);
+
+        return [
+            'tmdb_collection_id' => (int) ($payload['id'] ?? $tmdbCollectionId),
+            'name' => (string) ($payload['name'] ?? ''),
+            'description' => filled($payload['overview'] ?? null) ? (string) $payload['overview'] : null,
+            'poster_url' => $this->buildImageUrl($payload['poster_path'] ?? null, 'w780'),
+            'backdrop_url' => $this->buildImageUrl($payload['backdrop_path'] ?? null, 'original'),
+            'parts' => collect($payload['parts'] ?? [])
+                ->map(fn (array $part) => [
+                    'tmdb_id' => (int) ($part['id'] ?? 0),
+                    'title' => (string) ($part['title'] ?? ''),
+                    'release_year' => $this->extractReleaseYear($part['release_date'] ?? null),
+                    'poster_url' => $this->buildImageUrl($part['poster_path'] ?? null, 'w342'),
+                ])
+                ->filter(fn (array $row) => $row['tmdb_id'] > 0)
+                ->values()
+                ->all(),
+        ];
+    }
+
+    /**
+     * @return ?array<string, mixed>
+     */
+    private function mapBelongsToCollection(mixed $raw): ?array
+    {
+        if (! is_array($raw) || empty($raw['id'])) {
+            return null;
+        }
+
+        return [
+            'tmdb_collection_id' => (int) $raw['id'],
+            'name' => (string) ($raw['name'] ?? ''),
+            'poster_url' => $this->buildImageUrl($raw['poster_path'] ?? null, 'w780'),
+            'backdrop_url' => $this->buildImageUrl($raw['backdrop_path'] ?? null, 'original'),
         ];
     }
 
@@ -435,6 +508,12 @@ class TmdbService
             ? collect($seasonDetails)->sum(fn (array $season) => count($season['episodes'] ?? []))
             : (int) ($payload['number_of_episodes'] ?? $fallbackPayload['number_of_episodes'] ?? 0);
 
+        $localizedSynopsis = $this->localizeMainSynopsis(
+            "/tv/{$tmdbId}",
+            $payload,
+            $fallbackPayload,
+        );
+
         return [
             'tmdb_id' => $payload['id'] ?? $fallbackPayload['id'] ?? null,
             'tmdb_query' => (string) ($payload['id'] ?? $fallbackPayload['id'] ?? ''),
@@ -459,10 +538,8 @@ class TmdbService
                 $fallbackPayload['name'] ?? null,
             ),
             'original_language' => $payload['original_language'] ?? $fallbackPayload['original_language'] ?? null,
-            'synopsis' => $this->firstFilledString(
-                $payload['overview'] ?? null,
-                $fallbackPayload['overview'] ?? null,
-            ),
+            'synopsis' => $localizedSynopsis['synopsis'],
+            'synopsis_en' => $localizedSynopsis['synopsis_en'],
             'poster_url' => $this->buildImageUrl($payload['poster_path'] ?? $fallbackPayload['poster_path'] ?? null, 'w780'),
             'backdrop_url' => $this->buildImageUrl($payload['backdrop_path'] ?? $fallbackPayload['backdrop_path'] ?? null, 'original'),
             'trailer_url' => $this->resolveTrailerUrl(
@@ -1366,6 +1443,32 @@ class TmdbService
     /**
      * @param  array<int, string|null>  $values
      */
+    /**
+     * @param  array<string, mixed>|null  $payload
+     * @param  array<string, mixed>|null  $fallbackPayload
+     * @return array{synopsis: ?string, synopsis_en: ?string}
+     */
+    private function localizeMainSynopsis(
+        string $translationsBasePath,
+        ?array $payload,
+        ?array $fallbackPayload,
+    ): array {
+        $primaryOverview = is_array($payload) ? ($payload['overview'] ?? null) : null;
+        $fallbackOverview = is_array($fallbackPayload) ? ($fallbackPayload['overview'] ?? null) : null;
+        $persianFromTranslations = $this->fetchPersianOverviewFromTranslations($translationsBasePath);
+
+        return $this->synopsisHelper->localizeContentSynopsis(
+            $this->resolvePersianOverview(
+                $persianFromTranslations,
+                $primaryOverview,
+            ),
+            $this->firstFilledString(
+                $fallbackOverview,
+                $this->isPersianOverview($primaryOverview) ? null : $primaryOverview,
+            ),
+        );
+    }
+
     private function resolvePersianOverview(?string ...$values): ?string
     {
         foreach ($values as $value) {

@@ -6,7 +6,9 @@ use App\Models\Movie;
 use App\Models\Review;
 use App\Models\Series;
 use App\Models\User;
+use App\Services\Cinema\ReviewPresentationService;
 use App\Services\Cinema\ReviewRatingService;
+use App\Support\ReviewValidation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
@@ -16,6 +18,7 @@ class PublicReviewController extends Controller
 {
     public function __construct(
         private readonly ReviewRatingService $reviewRatingService,
+        private readonly ReviewPresentationService $reviewPresentationService,
     ) {
     }
 
@@ -45,12 +48,7 @@ class PublicReviewController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
         }
 
-        $validated = Validator::make($request->all(), [
-            'reviewable_type' => ['required', Rule::in(['movie', 'series'])],
-            'slug' => ['required', 'string', 'max:255'],
-            'rating' => ['required', 'integer', 'between:1,10'],
-            'body' => ['nullable', 'string', 'max:2000'],
-        ])->validate();
+        $validated = Validator::make($request->all(), ReviewValidation::submitRules())->validate();
 
         $content = $this->resolvePublishedContent(
             $validated['reviewable_type'],
@@ -65,8 +63,8 @@ class PublicReviewController extends Controller
         if ($existing) {
             return response()->json([
                 'success' => false,
-                'message' => 'You have already reviewed this title.',
-                'data' => ['review' => $this->transformReview($existing, $user)],
+                'message' => 'شما قبلاً برای این عنوان نظر ثبت کرده‌اید.',
+                'data' => ['review' => $this->reviewPresentationService->transform($existing, $user)],
             ], 409);
         }
 
@@ -75,17 +73,17 @@ class PublicReviewController extends Controller
             'reviewable_id' => $content->id,
             'user_id' => $user->id,
             'rating' => (int) $validated['rating'],
-            'body' => filled($validated['body'] ?? null)
-                ? strip_tags((string) $validated['body'])
-                : null,
-            'is_approved' => true,
+            'body' => ReviewValidation::sanitizeBody($validated['body']),
+            'status' => Review::STATUS_PENDING,
+            'is_approved' => false,
         ]);
 
         $review->load('user');
 
         return response()->json([
             'success' => true,
-            'data' => ['review' => $this->transformReview($review, $user)],
+            'message' => 'نظر شما ثبت شد و پس از تایید ادمین نمایش داده می‌شود.',
+            'data' => ['review' => $this->reviewPresentationService->transform($review, $user)],
         ], 201);
     }
 
@@ -101,24 +99,24 @@ class PublicReviewController extends Controller
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
-        $validated = Validator::make($request->all(), [
-            'rating' => ['sometimes', 'integer', 'between:1,10'],
-            'body' => ['nullable', 'string', 'max:2000'],
-        ])->validate();
+        $validated = Validator::make($request->all(), ReviewValidation::updateRules())->validate();
 
         $review->update([
             'rating' => array_key_exists('rating', $validated) ? (int) $validated['rating'] : $review->rating,
             'body' => array_key_exists('body', $validated)
-                ? (filled($validated['body']) ? strip_tags((string) $validated['body']) : null)
+                ? ReviewValidation::sanitizeBody($validated['body'])
                 : $review->body,
-            'is_approved' => true,
+            'status' => Review::STATUS_PENDING,
+            'is_approved' => false,
+            'moderated_at' => null,
         ]);
 
         $review->load('user');
 
         return response()->json([
             'success' => true,
-            'data' => ['review' => $this->transformReview($review, $user)],
+            'message' => 'نظر شما ویرایش شد و دوباره در صف تایید قرار گرفت.',
+            'data' => ['review' => $this->reviewPresentationService->transform($review, $user)],
         ]);
     }
 
@@ -134,9 +132,17 @@ class PublicReviewController extends Controller
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
+        $type = $review->reviewable_type;
+        $contentId = (int) $review->reviewable_id;
+        $wasApproved = $review->status === Review::STATUS_APPROVED;
+
         $review->delete();
 
-        return response()->json(['success' => true, 'message' => 'Review deleted.']);
+        if ($wasApproved) {
+            $this->reviewRatingService->recalculateForContent($type, $contentId);
+        }
+
+        return response()->json(['success' => true, 'message' => 'نظر حذف شد.']);
     }
 
     private function reviewsPayload(Request $request, string $type, int $contentId): JsonResponse
@@ -166,14 +172,14 @@ class PublicReviewController extends Controller
                 ->where('user_id', $authUser->id)
                 ->with('user')
                 ->first();
-            $userReview = $own ? $this->transformReview($own, $authUser) : null;
+            $userReview = $own ? $this->reviewPresentationService->transform($own, $authUser) : null;
         }
 
         return response()->json([
             'success' => true,
             'data' => [
                 'reviews' => collect($paginator->items())
-                    ->map(fn (Review $review) => $this->transformReview($review, $authUser))
+                    ->map(fn (Review $review) => $this->reviewPresentationService->transform($review, $authUser))
                     ->values(),
                 'summary' => $this->reviewRatingService->summaryForContent($type, $contentId),
                 'pagination' => [
@@ -200,24 +206,5 @@ class PublicReviewController extends Controller
             ->where('slug', $slug)
             ->where('publish_status', 'published')
             ->firstOrFail();
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function transformReview(Review $review, ?User $authUser): array
-    {
-        return [
-            'id' => $review->id,
-            'user' => [
-                'id' => $review->user->id,
-                'name' => $review->user->name,
-                'avatar_url' => null,
-            ],
-            'rating' => (int) $review->rating,
-            'body' => $review->body,
-            'created_at' => $review->created_at?->toISOString(),
-            'is_own' => $authUser !== null && (int) $review->user_id === (int) $authUser->id,
-        ];
     }
 }

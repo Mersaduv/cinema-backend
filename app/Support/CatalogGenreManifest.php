@@ -40,6 +40,7 @@ class CatalogGenreManifest
         ['slug' => 'biography', 'name' => 'زندگی‌نامه', 'tmdb_id' => null, 'type' => 'both'],
         ['slug' => 'war-politics', 'name' => 'جنگ و سیاست', 'tmdb_id' => 10768, 'type' => 'tv'],
         ['slug' => 'animation', 'name' => 'انیمیشن', 'tmdb_id' => 16, 'type' => 'both'],
+        ['slug' => 'cartoon', 'name' => 'کارتون', 'tmdb_id' => null, 'type' => 'both'],
         ['slug' => 'noir-mystery', 'name' => 'رازآلود', 'tmdb_id' => null, 'type' => 'both'],
         ['slug' => 'tv-movie', 'name' => 'فیلم تلویزیونی', 'tmdb_id' => 10770, 'type' => 'movie'],
         ['slug' => 'action-adventure', 'name' => 'اکشن و ماجراجویی', 'tmdb_id' => 10759, 'type' => 'tv'],
