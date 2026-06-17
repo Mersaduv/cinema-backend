@@ -437,10 +437,28 @@ class PublicSeriesController extends Controller
             'still_srcset' => $stillFields['srcset'],
             'still_image' => $stillFields['image'],
             'hls_url' => $hlsUrl,
+            'dash_url' => filled($episode->dash_url) && (bool) ($episode->dash_verified ?? false)
+                ? (string) $episode->dash_url
+                : null,
             'download_links' => $this->resolveEpisodeDownloadLinks($episode),
             'subtitle_url' => $episode->subtitle_url,
-            'dubbed_audio_url' => $episode->dubbed_audio_url,
+            'dubbed_audio_url' => $this->resolveExternalDubbedAudioUrl($episode),
         ];
+    }
+
+    private function resolveExternalDubbedAudioUrl(SeriesEpisode $episode): ?string
+    {
+        $path = $episode->dubbed_audio_url;
+
+        if (! filled($path)) {
+            return null;
+        }
+
+        if (preg_match('#\.m3u8(\?.*)?$#i', (string) $path) === 1) {
+            return null;
+        }
+
+        return (string) $path;
     }
 
     /**

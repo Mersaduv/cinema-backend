@@ -101,7 +101,51 @@ class HlsPackageInsightService
             'dubbed_source_path' => null,
             'audio_tracks' => [],
             'downloads' => [],
+            'dash_url' => null,
         ];
+    }
+
+    /**
+     * Confirms a DASH manifest is reachable before exposing it to playback clients.
+     */
+    public function verifyDashManifestUrl(?string $url): bool
+    {
+        if (! filled($url)) {
+            return false;
+        }
+
+        $trimmed = trim((string) $url);
+
+        if ($this->mediaPathService->isRemoteMediaReference($trimmed)) {
+            $remoteUrl = preg_match('#^https?://#i', $trimmed) === 1
+                ? $trimmed
+                : $this->mediaPathService->coerceRemoteMediaUrl($trimmed);
+
+            try {
+                $response = Http::connectTimeout(2)
+                    ->timeout(3)
+                    ->withOptions([
+                        'verify' => (bool) config('cinema.remote_media_ssl_verify', true),
+                        'allow_redirects' => ['max' => 3, 'protocols' => ['http', 'https']],
+                    ])
+                    ->withHeaders([
+                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    ])
+                    ->head($remoteUrl);
+
+                return $response->successful();
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
+        try {
+            $this->mediaPathService->ensureReadableFile($trimmed);
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -167,6 +211,17 @@ class HlsPackageInsightService
             ? $this->buildProgressiveDownloadMap($masterPlaylistUrl, $meta)
             : [];
 
+        $dashRelative = trim((string) ($meta['dash_url'] ?? $meta['dash_manifest'] ?? $meta['mpd_url'] ?? ''));
+        $dashUrl = $dashRelative !== ''
+            ? $this->resolveHlsUri($masterPlaylistUrl, $dashRelative)
+            : null;
+
+        if ($dashUrl === null || $dashUrl === '') {
+            $base = preg_replace('#/master\.m3u8(\?.*)?$#i', '', $masterPlaylistUrl);
+            $candidate = $base !== '' ? rtrim($base, '/').'/manifest.mpd' : null;
+            $dashUrl = filled($candidate) ? $candidate : null;
+        }
+
         return [
             'has_subtitle' => $hasSubtitle,
             'subtitle_source_path' => $subtitleSourcePath,
@@ -174,6 +229,7 @@ class HlsPackageInsightService
             'dubbed_source_path' => $dubbedSourcePath,
             'audio_tracks' => $audioTracks,
             'downloads' => $downloads,
+            'dash_url' => $dashUrl,
         ];
     }
 
@@ -213,6 +269,7 @@ class HlsPackageInsightService
             'dubbed_source_path' => $primary['dubbed_source_path'] ?? $secondary['dubbed_source_path'] ?? null,
             'audio_tracks' => ($primary['audio_tracks'] ?? []) !== [] ? $primary['audio_tracks'] : ($secondary['audio_tracks'] ?? []),
             'downloads' => array_merge($secondary['downloads'] ?? [], $primary['downloads'] ?? []),
+            'dash_url' => $primary['dash_url'] ?? $secondary['dash_url'] ?? null,
         ];
     }
 
@@ -1477,5 +1534,39 @@ class HlsPackageInsightService
         }
 
         return true;
+    }
+
+    /**
+     * TV browsers require CODECS, FRAME-RATE, and RESOLUTION on variant lines.
+     *
+     * @return array<int, string>
+     */
+    public function validateVariantAttributes(string $manifestContent): array
+    {
+        $warnings = [];
+        $lines = preg_split('/\R/', $manifestContent) ?: [];
+
+        foreach ($lines as $index => $line) {
+            $trimmed = trim($line);
+            if (! str_starts_with($trimmed, '#EXT-X-STREAM-INF')) {
+                continue;
+            }
+
+            $lineNumber = $index + 1;
+
+            if (! str_contains($line, 'CODECS=')) {
+                $warnings[] = "Line {$lineNumber}: Missing CODECS= attribute — TV browsers cannot determine codec support without this. Add CODECS=\"avc1.640020,mp4a.40.2\" (or correct codec string).";
+            }
+
+            if (! str_contains($line, 'FRAME-RATE=')) {
+                $warnings[] = "Line {$lineNumber}: Missing FRAME-RATE= attribute — Android TV and Fire TV filter variants without frame rate. Add FRAME-RATE=25 or FRAME-RATE=30 as appropriate.";
+            }
+
+            if (! str_contains($line, 'RESOLUTION=')) {
+                $warnings[] = "Line {$lineNumber}: Missing RESOLUTION= — Roku filters variants without resolution declaration.";
+            }
+        }
+
+        return $warnings;
     }
 }

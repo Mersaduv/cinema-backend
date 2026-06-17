@@ -31,6 +31,8 @@ class Movie extends Model
         'poster_path',
         'trailer_path',
         'has_dubbed_audio',
+        'drm_scheme',
+        'drm_license_url',
         'dubbed_source_path',
         'audio_tracks',
         'has_subtitle',

@@ -70,6 +70,26 @@ class ValidateHlsManifestJob implements ShouldQueue
                 verifyRemoteDownloadTargets: true,
             );
 
+            $manifestWarnings = $hlsPackageInsightService->validateVariantAttributes((string) $manifest);
+            if ($manifestWarnings !== []) {
+                $metadata = $movie->metadata ?? [];
+                data_set($metadata, 'hls_warnings', $manifestWarnings);
+                data_set($metadata, 'hls_validated_at', now()->toIso8601String());
+                $movie->update(['metadata' => $metadata]);
+
+                if ($movie->mediaAsset) {
+                    $assetMetadata = $movie->mediaAsset->metadata ?? [];
+                    data_set($assetMetadata, 'hls_warnings', $manifestWarnings);
+                    data_set($assetMetadata, 'hls_validated_at', now()->toIso8601String());
+                    $movie->mediaAsset->update(['metadata' => $assetMetadata]);
+                }
+            }
+
+            $candidateDash = $insights['dash_url'] ?? null;
+            if (filled($candidateDash) && ! $hlsPackageInsightService->verifyDashManifestUrl((string) $candidateDash)) {
+                $insights['dash_url'] = null;
+            }
+
             $this->applyPlaybackInsights($movie, $insights);
 
             $this->pipelineComplete(['manifest_url' => $canonical]);
@@ -119,6 +139,19 @@ class ValidateHlsManifestJob implements ShouldQueue
 
         if (! empty($insights['audio_tracks'])) {
             $updates['audio_tracks'] = $insights['audio_tracks'];
+        }
+
+        $metadata = $movie->metadata ?? [];
+        if (filled($insights['dash_url'] ?? null)) {
+            data_set($metadata, 'playback.dash_url', $insights['dash_url']);
+            data_set($metadata, 'playback.dash_verified', true);
+        } else {
+            data_set($metadata, 'playback.dash_url', null);
+            data_set($metadata, 'playback.dash_verified', false);
+        }
+
+        if ($metadata !== ($movie->metadata ?? [])) {
+            $updates['metadata'] = $metadata;
         }
 
         if ($updates !== []) {

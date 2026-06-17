@@ -27,8 +27,8 @@ use App\Services\Cinema\MediaPathService;
 use App\Services\Cinema\MovieCleanupService;
 use App\Services\Cinema\MovieDraftUpdateService;
 use App\Services\Cinema\MovieIngestionService;
-use App\Services\Cinema\PublishScheduleService;
 use App\Services\Cinema\HlsPackageInsightService;
+use App\Services\Cinema\PublishScheduleService;
 use App\Services\TmdbService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -394,6 +394,8 @@ class AdminMovieController extends Controller
             'belongs_to_collection.name' => ['nullable', 'string', 'max:255'],
             'belongs_to_collection.poster_url' => CinemaValidation::nullableImageOrUrl(),
             'belongs_to_collection.backdrop_url' => CinemaValidation::nullableImageOrUrl(),
+            'drm_scheme' => ['sometimes', Rule::in(['none', 'widevine', 'playready', 'fairplay'])],
+            'drm_license_url' => ['sometimes', 'nullable', 'url', 'max:1024'],
         ])->validate();
 
         try {
@@ -602,6 +604,13 @@ class AdminMovieController extends Controller
             'processing_error' => null,
             'metadata' => $metadata,
         ];
+
+        if (Schema::hasColumn('movies', 'drm_scheme')) {
+            $movieUpdate['drm_scheme'] = $validated['drm_scheme'] ?? ($movie->drm_scheme ?? 'none');
+            $movieUpdate['drm_license_url'] = ($movieUpdate['drm_scheme'] ?? 'none') === 'none'
+                ? null
+                : ($validated['drm_license_url'] ?? $movie->drm_license_url);
+        }
 
         // If migration hasn't been applied yet, avoid crashing on missing columns.
         if (Schema::hasColumn('movies', 'filter_rating')) {
@@ -843,6 +852,8 @@ class AdminMovieController extends Controller
                 'download_links' => $downloadLinks,
                 'has_subtitle' => $insights['has_subtitle'],
                 'has_dubbed_audio' => $insights['has_dubbed_audio'],
+                'dash_url' => $this->resolveDashUrl($canonical, $insights),
+                'dash_verified' => filled($this->resolveDashUrl($canonical, $insights)),
                 'audio_tracks' => collect($insights['audio_tracks'] ?? [])
                     ->map(fn (array $track) => [
                         'label' => $track['label'] ?? '',
@@ -853,6 +864,27 @@ class AdminMovieController extends Controller
                     ->all(),
             ],
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $insights
+     */
+    private function resolveDashUrl(string $hlsUrl, array $insights): ?string
+    {
+        if (! empty($insights['dash_url'])) {
+            $candidate = (string) $insights['dash_url'];
+
+            return $this->hlsPackageInsightService->verifyDashManifestUrl($candidate)
+                ? $candidate
+                : null;
+        }
+
+        $base = preg_replace('/\/master\.m3u8(\?.*)?$/i', '', $hlsUrl);
+        $candidateMpd = rtrim((string) $base, '/').'/manifest.mpd';
+
+        return $this->hlsPackageInsightService->verifyDashManifestUrl($candidateMpd)
+            ? $candidateMpd
+            : null;
     }
 
     private function isPublicationSourceExternal(?string $path): bool
@@ -1040,6 +1072,8 @@ class AdminMovieController extends Controller
             'has_subtitle' => $movie->has_subtitle,
             'subtitle_source_path' => $movie->subtitle_source_path,
             'subtitle_source_url' => $this->resolveManagedOrExternalUrl($movie->subtitle_source_path),
+            'drm_scheme' => $movie->drm_scheme ?? 'none',
+            'drm_license_url' => $movie->drm_license_url,
             'age_rating' => $movie->age_rating,
             'cast_members' => $movie->cast_members ?? [],
             'tmdb_id' => $movie->tmdb_id,

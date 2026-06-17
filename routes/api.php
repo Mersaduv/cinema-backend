@@ -1,5 +1,8 @@
 <?php
 
+use App\Http\Controllers\AdminContentRequestController;
+use App\Http\Controllers\AdminTicketController;
+use App\Http\Controllers\UploadController;
 use App\Http\Controllers\AdminCollectionController;
 use App\Http\Controllers\AdminMovieController;
 use App\Http\Controllers\AdminReviewController;
@@ -11,11 +14,18 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\FilterOptionsController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\PersonController;
+use App\Http\Controllers\PublicContentRequestController;
+use App\Http\Controllers\PublicTicketController;
 use App\Http\Controllers\PublicCollectionController;
 use App\Http\Controllers\PublicMovieController;
 use App\Http\Controllers\PublicReviewController;
 use App\Http\Controllers\PublicSeriesController;
 use App\Http\Controllers\TmdbController;
+use App\Http\Controllers\TvActivationController;
+use App\Http\Controllers\Admin\QoeDashboardController;
+use App\Http\Controllers\PlaybackSessionController;
+use App\Http\Controllers\QoeTelemetryController;
+use App\Http\Controllers\WatchProgressController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -57,6 +67,16 @@ Route::get('/collections', [PublicCollectionController::class, 'index']);
 Route::get('/collections/{collection:slug}', [PublicCollectionController::class, 'show']);
 Route::get('/persons', [PersonController::class, 'index']);
 Route::get('/persons/{slug}', [PersonController::class, 'show']);
+Route::get('/v1/playback/session', [PlaybackSessionController::class, 'show']);
+Route::get('/v1/playback/verify-token', [PlaybackSessionController::class, 'verifyToken']);
+
+Route::middleware('throttle:60,1')->post('/v1/qoe', [QoeTelemetryController::class, 'receive']);
+
+Route::prefix('v1/tv/activate')->group(function () {
+    Route::post('/request', [TvActivationController::class, 'request'])->middleware('throttle:10,1');
+    Route::get('/poll', [TvActivationController::class, 'poll'])->middleware('throttle:60,1');
+    Route::post('/confirm', [TvActivationController::class, 'confirm'])->middleware('auth:sanctum');
+});
 
 // Protected routes (require authentication)
 Route::middleware('auth:sanctum')->group(function () {
@@ -69,7 +89,26 @@ Route::middleware('auth:sanctum')->group(function () {
     });
     Route::put('/reviews/{review}', [PublicReviewController::class, 'update']);
     Route::delete('/reviews/{review}', [PublicReviewController::class, 'destroy']);
-    
+
+    Route::get('/requests', [PublicContentRequestController::class, 'index']);
+    Route::middleware('throttle:reviews')->post('/requests', [PublicContentRequestController::class, 'store']);
+
+    Route::get('/ticket-categories', [PublicTicketController::class, 'categories']);
+    Route::get('/tickets', [PublicTicketController::class, 'index']);
+    Route::get('/tickets/{supportTicket}', [PublicTicketController::class, 'show']);
+    Route::match(['put', 'patch'], '/tickets/{supportTicket}/close', [PublicTicketController::class, 'close']);
+    Route::middleware('throttle:reviews')->post('/tickets/{supportTicket}/messages', [PublicTicketController::class, 'storeMessage']);
+    Route::middleware('throttle:reviews')->post('/tickets', [PublicTicketController::class, 'store']);
+    Route::middleware('throttle:reviews')->post('/upload', [UploadController::class, 'store']);
+
+    Route::prefix('v1')->group(function () {
+        Route::get('/watch-progress', [WatchProgressController::class, 'index']);
+        Route::post('/watch-progress', [WatchProgressController::class, 'store']);
+        Route::post('/watch-progress/migrate', [WatchProgressController::class, 'migrate']);
+        Route::get('/watch-progress/{mediaId}', [WatchProgressController::class, 'show']);
+        Route::delete('/watch-progress/{mediaId}', [WatchProgressController::class, 'destroy']);
+    });
+
     // Example protected routes
     // Route::get('/movies', [MovieController::class, 'index']);
     // Route::get('/movies/{id}', [MovieController::class, 'show']);
@@ -103,6 +142,7 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::get('/series/options', [AdminSeriesController::class, 'options']);
     Route::post('/series', [AdminSeriesController::class, 'store']);
     Route::post('/series/ingest-tmdb-images', [AdminSeriesController::class, 'ingestTmdbImages']);
+    Route::post('/series/preview-hls-package', [AdminSeriesController::class, 'previewHlsPackage']);
     Route::get('/series/{series}', [AdminSeriesController::class, 'show']);
     Route::match(['put', 'patch'], '/series/{series}', [AdminSeriesController::class, 'update']);
     Route::get('/series/{series}/pipeline', [AdminSeriesController::class, 'getPipeline']);
@@ -133,5 +173,14 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::put('/reviews/{review}/approve', [AdminReviewController::class, 'approve']);
     Route::put('/reviews/{review}/reject', [AdminReviewController::class, 'reject']);
     Route::delete('/reviews/{review}', [AdminReviewController::class, 'destroy']);
+
+    Route::get('/requests', [AdminContentRequestController::class, 'index']);
+    Route::match(['put', 'patch'], '/requests/{contentRequest}', [AdminContentRequestController::class, 'update']);
+
+    Route::get('/tickets', [AdminTicketController::class, 'index']);
+    Route::get('/tickets/{supportTicket}', [AdminTicketController::class, 'show']);
+    Route::match(['put', 'patch'], '/tickets/{supportTicket}', [AdminTicketController::class, 'update']);
+
+    Route::get('/qoe/summary', [QoeDashboardController::class, 'summary']);
 
 });

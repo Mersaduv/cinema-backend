@@ -2,8 +2,14 @@
 
 namespace App\Providers;
 
+use App\Models\Movie;
 use App\Models\Review;
+use App\Models\Series;
+use App\Models\SeriesEpisode;
+use App\Observers\MovieObserver;
 use App\Observers\ReviewObserver;
+use App\Observers\SeriesEpisodeObserver;
+use App\Observers\SeriesObserver;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -43,5 +49,8 @@ class AppServiceProvider extends ServiceProvider
         });
 
         Review::observe(ReviewObserver::class);
+        Movie::observe(MovieObserver::class);
+        Series::observe(SeriesObserver::class);
+        SeriesEpisode::observe(SeriesEpisodeObserver::class);
     }
 }

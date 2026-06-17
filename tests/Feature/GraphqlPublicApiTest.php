@@ -323,4 +323,79 @@ class GraphqlPublicApiTest extends TestCase
             ->assertJsonPath('data.watchMovie.hls_url', 'https://cinema.af/movies/watch-me/master.m3u8')
             ->assertJsonMissingPath('errors');
     }
+
+    public function test_watch_movie_query_hides_unverified_dash_url(): void
+    {
+        Movie::query()->create([
+            'title' => 'Sinners',
+            'slug' => 'sinners',
+            'media_folder' => 'movies/sinners',
+            'publish_status' => 'published',
+            'published_at' => now(),
+            'metadata' => [
+                'playback' => [
+                    'hls_url' => 'http://cinema.af/content2/movies2/sinners/master.m3u8',
+                    'dash_url' => 'http://cinema.af/content2/movies2/sinners/manifest.mpd',
+                    'dash_verified' => false,
+                ],
+            ],
+        ]);
+
+        $response = $this->postJson('/graphql', [
+            'query' => <<<'GQL'
+                query ($slug: String!) {
+                  watchMovie(slug: $slug) {
+                    hls_url
+                    dash_url
+                  }
+                }
+            GQL,
+            'variables' => ['slug' => 'sinners'],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.watchMovie.hls_url', 'http://cinema.af/content2/movies2/sinners/master.m3u8')
+            ->assertJsonPath('data.watchMovie.dash_url', null)
+            ->assertJsonMissingPath('errors');
+    }
+
+    public function test_watch_movie_query_omits_hls_playlist_from_dubbed_audio_url(): void
+    {
+        Movie::query()->create([
+            'title' => 'Sinners Dub',
+            'slug' => 'sinners-dub',
+            'media_folder' => 'movies/sinners-dub',
+            'publish_status' => 'published',
+            'published_at' => now(),
+            'dubbed_source_path' => 'http://cinema.af/content2/sinners/audio/fa/index.m3u8',
+            'has_dubbed_audio' => true,
+            'metadata' => [
+                'playback' => [
+                    'hls_url' => 'http://cinema.af/content2/sinners/master.m3u8',
+                ],
+            ],
+        ]);
+
+        $response = $this->postJson('/graphql', [
+            'query' => <<<'GQL'
+                query ($slug: String!) {
+                  watchMovie(slug: $slug) {
+                    dubbed_audio_url
+                    audio_tracks {
+                      name
+                      language
+                      type
+                    }
+                  }
+                }
+            GQL,
+            'variables' => ['slug' => 'sinners-dub'],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.watchMovie.dubbed_audio_url', null)
+            ->assertJsonMissingPath('errors');
+    }
 }

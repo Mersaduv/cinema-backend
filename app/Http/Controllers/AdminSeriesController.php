@@ -11,6 +11,7 @@ use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\GenreCatalogService;
+use App\Services\Cinema\HlsPackageInsightService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaValidation;
 use App\Models\SeriesCast;
@@ -23,6 +24,7 @@ use App\Services\Cinema\ContentPipelineStatusService;
 use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\PublishScheduleService;
 use App\Services\Cinema\SeriesHlsPathService;
+use App\Services\Cinema\WatchProgressLifecycleService;
 use App\Support\CinemaSynopsisHelper;
 use App\Services\TmdbService;
 use Illuminate\Http\JsonResponse;
@@ -30,6 +32,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -53,6 +56,8 @@ class AdminSeriesController extends Controller
         private readonly ImagePresentationService $imagePresentationService,
         private readonly ContentPipelineLauncher $contentPipelineLauncher,
         private readonly ContentPipelineStatusService $contentPipelineStatusService,
+        private readonly HlsPackageInsightService $hlsPackageInsightService,
+        private readonly WatchProgressLifecycleService $watchProgressLifecycle,
     ) {
     }
 
@@ -344,6 +349,8 @@ class AdminSeriesController extends Controller
         $localizedGenres = $this->resolveLocalizedGenres($validated);
         $validated = $this->applyLocalizedContentSynopsis($validated, $series);
 
+        $this->watchProgressLifecycle->purgeForSeries($series->id);
+
         $updated = DB::transaction(function () use ($series, $validated, $localizedGenres) {
             $slug = $this->resolveUniqueSlug([
                 $validated['slug'] ?? null,
@@ -426,6 +433,54 @@ class AdminSeriesController extends Controller
         ]);
     }
 
+    public function previewHlsPackage(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'hls_url' => ['required', 'string', 'max:2048'],
+        ])->validate();
+
+        $raw = trim((string) $validated['hls_url']);
+        $canonical = $this->hlsPackageInsightService->normalizeHlsPackageMasterUrl($raw);
+
+        if (! filled($canonical)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A valid HLS package URL or path is required.',
+            ], 422);
+        }
+
+        $manifest = $this->hlsPackageInsightService->loadHlsContent($canonical);
+
+        if (! filled($manifest) || stripos((string) $manifest, '#EXTM3U') === false) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The HLS master playlist could not be loaded.',
+            ], 422);
+        }
+
+        $insights = $this->hlsPackageInsightService->extractPlaybackInsights(
+            $canonical,
+            $manifest,
+            verifyRemoteDownloadTargets: false,
+        );
+
+        $dashUrl = $this->resolveEpisodeDashUrl($canonical, $insights);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'canonical_hls_url' => $canonical,
+                'hls_verified' => true,
+                'has_subtitle' => $insights['has_subtitle'],
+                'has_dubbed_audio' => $insights['has_dubbed_audio'],
+                'subtitle_url' => $insights['subtitle_source_path'],
+                'dubbed_audio_url' => $insights['dubbed_source_path'],
+                'dash_url' => $dashUrl,
+                'dash_verified' => filled($dashUrl),
+            ],
+        ]);
+    }
+
     public function updatePublishStatus(Request $request, Series $series): JsonResponse
     {
         $validated = Validator::make($request->all(), [
@@ -493,6 +548,7 @@ class AdminSeriesController extends Controller
         $slug = $series->slug;
 
         DB::transaction(function () use ($series): void {
+            $this->watchProgressLifecycle->purgeForSeries($series->id);
             $series->episodes()->delete();
             $series->seasons()->delete();
             $series->castMembers()->delete();
@@ -613,6 +669,8 @@ class AdminSeriesController extends Controller
             'seasons.*.episodes.*.embed_url' => ['nullable', 'url', 'max:2048'],
             'seasons.*.episodes.*.hls_url' => ['nullable', 'string', 'max:2048'],
             'seasons.*.episodes.*.hls_verified' => ['nullable', 'boolean'],
+            'seasons.*.episodes.*.dash_url' => ['nullable', 'string', 'max:2048'],
+            'seasons.*.episodes.*.dash_verified' => ['nullable', 'boolean'],
             'seasons.*.episodes.*.download_links' => ['nullable', 'array'],
             'seasons.*.episodes.*.download_links.*' => ['nullable', 'string', 'max:2048'],
             'seasons.*.episodes.*.subtitle_url' => ['nullable', 'url', 'max:2048'],
@@ -623,6 +681,8 @@ class AdminSeriesController extends Controller
             'tmdb_excluded_episodes' => ['nullable', 'array'],
             'tmdb_excluded_episodes.*.season_number' => ['required_with:tmdb_excluded_episodes', 'integer', 'min:1', 'max:999'],
             'tmdb_excluded_episodes.*.episode_number' => ['required_with:tmdb_excluded_episodes', 'integer', 'min:1', 'max:999'],
+            'drm_scheme' => ['sometimes', Rule::in(['none', 'widevine', 'playready', 'fairplay'])],
+            'drm_license_url' => ['sometimes', 'nullable', 'url', 'max:1024'],
         ])->validate();
     }
 
@@ -782,6 +842,13 @@ class AdminSeriesController extends Controller
             'catalog_visibility' => $validated['catalog_visibility'] ?? 'catalog_search',
             'is_featured' => (bool) ($validated['is_featured'] ?? false),
         ];
+
+        if (Schema::hasColumn('series', 'drm_scheme')) {
+            $attributes['drm_scheme'] = $validated['drm_scheme'] ?? 'none';
+            $attributes['drm_license_url'] = ($attributes['drm_scheme'] ?? 'none') === 'none'
+                ? null
+                : ($validated['drm_license_url'] ?? null);
+        }
 
         if (Schema::hasColumn('series', 'filter_rating')) {
             $attributes['filter_rating'] = isset($validated['rating']) ? (float) $validated['rating'] : null;
@@ -988,10 +1055,17 @@ class AdminSeriesController extends Controller
         }
 
         if ($payloadEpisodeNumbers === []) {
+            $removedIds = $season->episodes()->pluck('id');
+            $this->watchProgressLifecycle->purgeForEpisodes($series->id, $removedIds);
             $season->episodes()->delete();
 
             return;
         }
+
+        $removedIds = $season->episodes()
+            ->whereNotIn('episode_number', $payloadEpisodeNumbers)
+            ->pluck('id');
+        $this->watchProgressLifecycle->purgeForEpisodes($series->id, $removedIds);
 
         $season->episodes()
             ->whereNotIn('episode_number', $payloadEpisodeNumbers)
@@ -1014,6 +1088,10 @@ class AdminSeriesController extends Controller
                 ?: 'Episode ' . $episodeNumber;
             $episodeHlsUrl = $this->nullableString($episodePayload['hls_url'] ?? null);
             $episodeHlsVerified = (bool) ($episodePayload['hls_verified'] ?? false);
+            $episodeDashVerified = (bool) ($episodePayload['dash_verified'] ?? false);
+            $episodeDashUrl = $episodeDashVerified
+                ? $this->nullableString($episodePayload['dash_url'] ?? null)
+                : null;
 
             if (!$episodeHlsVerified) {
                 $episodeHlsUrl = null;
@@ -1040,6 +1118,7 @@ class AdminSeriesController extends Controller
                     ...(array) data_get($existingEpisodeMetadata, 'playback', []),
                     'method' => $episodePayload['source_method'] ?? 'hls',
                     'hls_verified' => $episodeHlsVerified,
+                    'dash_verified' => $episodeDashVerified,
                     'downloads' => $episodeDownloads,
                 ],
                 'tmdb' => [
@@ -1067,6 +1146,8 @@ class AdminSeriesController extends Controller
                 'video_url' => $this->nullableString($episodePayload['video_url'] ?? null),
                 'embed_url' => $this->nullableString($episodePayload['embed_url'] ?? null),
                 'hls_url' => $episodeHlsUrl,
+                'dash_url' => $episodeDashUrl,
+                'dash_verified' => $episodeDashVerified,
                 'subtitle_url' => $this->nullableString($episodePayload['subtitle_url'] ?? null),
                 'dubbed_audio_url' => $this->nullableString($episodePayload['dubbed_audio_url'] ?? null),
                 'publish_status' => $episodePayload['publish_status'] ?? 'draft',
@@ -1096,6 +1177,8 @@ class AdminSeriesController extends Controller
                 'video_url',
                 'embed_url',
                 'hls_url',
+                'dash_url',
+                'dash_verified',
                 'subtitle_url',
                 'dubbed_audio_url',
                 'publish_status',
@@ -1206,6 +1289,8 @@ class AdminSeriesController extends Controller
             'embed_url' => $episode->embed_url,
             'hls_url' => $episode->hls_url,
             'hls_verified' => (bool) data_get($episode->metadata, 'playback.hls_verified', false),
+            'dash_url' => $episode->dash_url,
+            'dash_verified' => (bool) ($episode->dash_verified ?? data_get($episode->metadata, 'playback.dash_verified', false)),
             'publish_status' => $episode->publish_status,
             'subtitle_url' => $episode->subtitle_url,
             'dubbed_audio_url' => $episode->dubbed_audio_url,
@@ -1260,6 +1345,8 @@ class AdminSeriesController extends Controller
             'age_rating' => $series->age_rating,
             'has_subtitle' => $hasSubtitle,
             'has_dubbed' => $hasDubbed,
+            'drm_scheme' => $series->drm_scheme ?? 'none',
+            'drm_license_url' => $series->drm_license_url,
             'catalog_visibility' => $series->catalog_visibility,
             'is_featured' => $series->is_featured,
             'publish_status' => $series->publish_status,
@@ -1500,6 +1587,8 @@ class AdminSeriesController extends Controller
             'embed_url' => $episode->embed_url,
             'hls_url' => $episode->hls_url,
             'hls_verified' => (bool) data_get($episode->metadata, 'playback.hls_verified', false),
+            'dash_url' => $episode->dash_url,
+            'dash_verified' => (bool) ($episode->dash_verified ?? data_get($episode->metadata, 'playback.dash_verified', false)),
             'download_links' => data_get($episode->metadata, 'playback.downloads', []),
             'subtitle_url' => $episode->subtitle_url,
             'dubbed_audio_url' => $episode->dubbed_audio_url,
@@ -1768,5 +1857,30 @@ class AdminSeriesController extends Controller
             'success' => true,
             'data' => $data,
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $insights
+     */
+    private function resolveEpisodeDashUrl(string $hlsUrl, array $insights): ?string
+    {
+        if (! empty($insights['dash_url'])) {
+            return (string) $insights['dash_url'];
+        }
+
+        $base = preg_replace('/\/master\.m3u8(\?.*)?$/i', '', $hlsUrl);
+        $candidateMpd = rtrim((string) $base, '/').'/manifest.mpd';
+
+        try {
+            $response = Http::timeout(3)->head($candidateMpd);
+
+            if ($response->successful()) {
+                return $candidateMpd;
+            }
+        } catch (\Throwable) {
+            // Probe failure is acceptable.
+        }
+
+        return null;
     }
 }

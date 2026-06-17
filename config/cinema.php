@@ -28,6 +28,16 @@ return [
     'hls_directory' => 'hls',
     'assets_directory' => 'assets',
     'hls_segment_duration' => 6,
+    /**
+     * Optional HMAC signing for playback manifest URLs (Phase 4).
+     * When empty, playback URLs are returned unchanged.
+     */
+    'playback_signing_secret' => env('CINEMA_PLAYBACK_SIGNING_SECRET'),
+    'playback_session_ttl_seconds' => (int) env('CINEMA_PLAYBACK_SESSION_TTL_SECONDS', 3600),
+    /**
+     * When true, watchMovie / watchEpisode GraphQL resolvers require an authenticated user.
+     */
+    'watch_auth_required' => (bool) env('CINEMA_WATCH_AUTH_REQUIRED', false),
     'hls_profiles' => [
         '360p' => [
             'width' => 640,

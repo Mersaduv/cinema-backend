@@ -36,6 +36,8 @@ class Series extends Model
         'number_of_episodes',
         'has_subtitle',
         'has_dubbed',
+        'drm_scheme',
+        'drm_license_url',
         'network',
         'provider_name',
         'poster_url',

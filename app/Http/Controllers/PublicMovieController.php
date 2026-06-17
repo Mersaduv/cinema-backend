@@ -277,6 +277,7 @@ class PublicMovieController extends Controller
                             'character' => $row->character_name,
                             'profile_url' => $resolvedProfileUrl,
                             'profile_image' => $metadataProfileImage ?? $profileImage,
+                            'order' => $row->cast_order,
                         ];
                     })
                     ->values()

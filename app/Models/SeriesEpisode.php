@@ -22,6 +22,8 @@ class SeriesEpisode extends Model
         'video_url',
         'embed_url',
         'hls_url',
+        'dash_url',
+        'dash_verified',
         'subtitle_url',
         'dubbed_audio_url',
         'publish_status',

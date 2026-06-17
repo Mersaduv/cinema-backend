@@ -162,6 +162,7 @@ class ImageStorageService
             'image/jpeg', 'image/jpg' => 'jpg',
             'image/png' => 'png',
             'image/webp' => 'webp',
+            'image/gif' => 'gif',
             'image/svg+xml' => $allowSvg ? 'svg' : throw new InvalidArgumentException('SVG is only allowed for genre artwork.'),
             default => throw new InvalidArgumentException('Unsupported image mime type: ' . $mimeType),
         };

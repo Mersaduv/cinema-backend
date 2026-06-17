@@ -208,11 +208,20 @@ type AudioTrack {
 }
 
 type MovieWatch {
+  id: ID!
+  slug: String!
   hls_url: String!
+  dash_url: String
   subtitle_url: String
   dubbed_audio_url: String
   audio_tracks: [AudioTrack!]!
   downloads: [DownloadLink!]!
+  drm: DrmConfig
+}
+
+type DrmConfig {
+  scheme: String!
+  licenseUrl: String
 }
 
 # ---- Movie (catalog card — list only) ----
@@ -390,10 +399,12 @@ type SeriesSeason {
 
 type SeriesEpisode {
   id: ID!
+  season_number: Int!
   episode_number: Int!
   title: String
   synopsis: String
   hls_url: String
+  dash_url: String
   subtitle_url: String
   dubbed_audio_url: String
   duration_seconds: Int @field(resolver: "App\\GraphQL\\Types\\SeriesEpisode@durationSeconds")
@@ -402,8 +413,11 @@ type SeriesEpisode {
 
 type EpisodeWatch {
   hls_url: String!
+  dash_url: String
   subtitle_url: String
   dubbed_audio_url: String
+  audio_tracks: [AudioTrack!]!
+  drm: DrmConfig
   episode: SeriesEpisode!
   series: SeriesSummary!
   next_episode: SeriesEpisode
