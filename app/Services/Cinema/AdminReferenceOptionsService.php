@@ -5,6 +5,7 @@ namespace App\Services\Cinema;
 use App\Models\Genre;
 use App\Models\ProductionCountry;
 use App\Models\SpokenLanguage;
+use App\Support\CatalogGenreManifest;
 use Illuminate\Support\Facades\Cache;
 
 class AdminReferenceOptionsService
@@ -56,17 +57,28 @@ class AdminReferenceOptionsService
         }
 
         $data = Cache::remember('admin_reference_options_v1', 86400, function (): array {
+            CatalogGenreManifest::ensureCatalogGenresExist();
+
             return [
-                'genres' => Genre::query()
-                    ->orderBy('name')
-                    ->get(['id', 'tmdb_id', 'name', 'slug', 'type'])
-                    ->map(fn (Genre $genre) => [
-                        'id' => $genre->id,
-                        'tmdb_id' => $genre->tmdb_id,
-                        'name' => $genre->name,
-                        'slug' => $genre->slug,
-                        'type' => $genre->type,
-                    ])
+                'genres' => collect(CatalogGenreManifest::CATALOG_ROWS)
+                    ->map(function (array $row) {
+                        $genre = $row['tmdb_id'] !== null
+                            ? Genre::query()->where('tmdb_id', $row['tmdb_id'])->first()
+                            : Genre::query()->where('slug', $row['slug'])->first();
+
+                        if (! $genre instanceof Genre) {
+                            return null;
+                        }
+
+                        return [
+                            'id' => $genre->id,
+                            'tmdb_id' => $genre->tmdb_id,
+                            'name' => $row['name'],
+                            'slug' => $genre->slug,
+                            'type' => $genre->type,
+                        ];
+                    })
+                    ->filter()
                     ->values()
                     ->all(),
                 'countries' => ProductionCountry::query()

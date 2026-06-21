@@ -11,6 +11,7 @@ class CatalogFilterQuery
 {
     public function __construct(
         private readonly CountryCatalogService $countryCatalogService,
+        private readonly GenreCatalogService $genreCatalogService,
     ) {}
 
     /**
@@ -141,6 +142,8 @@ class CatalogFilterQuery
                 Genre::query()->whereIn('tmdb_id', $tmdbIds)->pluck('id')->all(),
             )));
         }
+
+        $genreIds = $this->genreCatalogService->expandGenreIdsForFilter($genreIds);
 
         if ($genreIds === []) {
             $query->whereRaw('1 = 0');
@@ -305,6 +308,8 @@ class CatalogFilterQuery
                 Genre::query()->whereIn('tmdb_id', $tmdbIds)->pluck('id')->all(),
             )));
         }
+
+        $genreIds = $this->genreCatalogService->expandGenreIdsForFilter($genreIds);
 
         return $genreIds !== [] ? implode(',', $genreIds) : '0';
     }

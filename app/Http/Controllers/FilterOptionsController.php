@@ -7,6 +7,7 @@ use App\Models\ProductionCountry;
 use App\Models\Series;
 use App\Models\SpokenLanguage;
 use App\Services\Cinema\EnsureTmdbReferenceDataService;
+use App\Services\Cinema\GenreCatalogService;
 use App\Support\CatalogGenreManifest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Cache;
@@ -15,6 +16,7 @@ class FilterOptionsController extends Controller
 {
     public function __construct(
         private readonly EnsureTmdbReferenceDataService $referenceData,
+        private readonly GenreCatalogService $genreCatalogService,
     ) {}
     /** @var array<int, string> */
     private const POPULAR_COUNTRY_ISOS = [
@@ -55,6 +57,7 @@ class FilterOptionsController extends Controller
                     ['value' => 'top_rated', 'label' => 'بهترین امتیاز'],
                     ['value' => 'popular', 'label' => 'محبوب‌ترین'],
                 ],
+                'genre_id_aliases' => $this->genreCatalogService->buildGenreIdAliasMap(),
             ];
         });
 

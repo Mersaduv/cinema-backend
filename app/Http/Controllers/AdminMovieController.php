@@ -15,6 +15,7 @@ use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CollectionService;
 use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\CatalogListProcedureService;
+use App\Services\Cinema\GenreAlignmentService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaSynopsisHelper;
@@ -48,6 +49,7 @@ class AdminMovieController extends Controller
         private readonly HlsPackageInsightService $hlsPackageInsightService,
         private readonly TmdbService $tmdbService,
         private readonly GenreCatalogService $genreCatalogService,
+        private readonly GenreAlignmentService $genreAlignmentService,
         private readonly CountryCatalogService $countryCatalogService,
         private readonly AdminReferenceOptionsService $adminReferenceOptionsService,
         private readonly AdminCatalogSummaryService $adminCatalogSummaryService,
@@ -461,14 +463,13 @@ class AdminMovieController extends Controller
             ->filter()
             ->values()
             ->all();
-        $genres = $this->tmdbService->localizeGenreNames(
-            collect($validated['genres'] ?? [])
-                ->map(fn ($item) => trim((string) $item))
-                ->filter()
-                ->values()
-                ->all(),
-            'movie',
-        );
+        $rawGenreInput = collect($validated['genres'] ?? [])
+            ->map(fn ($item) => trim((string) $item))
+            ->filter()
+            ->values()
+            ->all();
+        $alignedGenres = $this->genreAlignmentService->align($rawGenreInput, 'movie');
+        $genres = $alignedGenres['labels'];
         $tags = collect($validated['tags'] ?? [])
             ->map(fn ($item) => trim((string) $item))
             ->filter()
@@ -489,8 +490,8 @@ class AdminMovieController extends Controller
             (string) ($validated['provider_name'] ?? ''),
         ]);
         $countryIsos = $this->countryCatalogService->resolveIsos($countries);
-        $filterIds = $this->buildFilterIdentifiers($genres, $countryIsos, $primaryNetwork);
-        $primaryGenre = $filterIds['genre_ids'][0] ?? null;
+        $filterIds = $this->buildFilterIdentifiers($alignedGenres, $countryIsos, $primaryNetwork);
+        $primaryGenre = $alignedGenres['slugs'][0] ?? null;
         $primaryCountry = $countryIsos[0] ?? null;
         $primaryNetworkId = $filterIds['network_ids'][0] ?? null;
         $actors = collect($validated['actors'] ?? [])
@@ -550,6 +551,7 @@ class AdminMovieController extends Controller
                     'budget' => isset($validated['budget']) ? (int) $validated['budget'] : null,
                     'revenue' => isset($validated['revenue']) ? (int) $validated['revenue'] : null,
                     'genres' => $genres,
+                    'genre_refs' => $alignedGenres['refs'],
                     'tags' => $tags,
                     'languages' => $languages,
                     'countries' => $countries,
@@ -625,6 +627,7 @@ class AdminMovieController extends Controller
         $movie->update($movieUpdate);
 
         $this->genreCatalogService->syncMovieGenres($movie, $genres);
+        $this->genreAlignmentService->touchAfterAlignment();
 
         $collectionData = data_get($metadata, 'tmdb.belongs_to_collection');
         if (is_array($collectionData) && $collectionData !== []) {
@@ -1136,10 +1139,10 @@ class AdminMovieController extends Controller
                     'production_status' => data_get($metadata, 'tmdb.production_status'),
                     'budget' => data_get($metadata, 'tmdb.budget'),
                     'revenue' => data_get($metadata, 'tmdb.revenue'),
-                    'genres' => $this->tmdbService->localizeGenreNames(
-                        data_get($metadata, 'tmdb.genres', []),
+                    'genres' => $this->genreAlignmentService->align(
+                        data_get($metadata, 'tmdb.genre_refs', data_get($metadata, 'tmdb.genres', [])),
                         'movie',
-                    ),
+                    )['labels'],
                     'tags' => data_get($metadata, 'tmdb.tags', []),
                     'languages' => data_get($metadata, 'tmdb.languages', []),
                     'countries' => data_get($metadata, 'tmdb.countries', []),
@@ -1315,14 +1318,14 @@ class AdminMovieController extends Controller
     }
 
     /**
-     * @param  array<int, string>  $genres
+     * @param  array{labels: array<int, string>, ids: array<int, int>, slugs: array<int, string>}  $alignedGenres
      * @param  array<int, string>  $countryIsos
      * @return array{genre_ids: array<int, string>, country_ids: array<int, string>, network_ids: array<int, string>}
      */
-    private function buildFilterIdentifiers(array $genres, array $countryIsos, ?string $network): array
+    private function buildFilterIdentifiers(array $alignedGenres, array $countryIsos, ?string $network): array
     {
         return [
-            'genre_ids' => $this->normalizeFilterIdentifiers($genres),
+            'genre_ids' => array_map('strval', $alignedGenres['ids']),
             'country_ids' => array_values(array_unique(array_map(
                 fn (string $iso) => strtoupper($iso),
                 $countryIsos,

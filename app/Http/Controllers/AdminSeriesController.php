@@ -10,6 +10,7 @@ use App\Services\Cinema\AdminReferenceOptionsService;
 use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\CountryCatalogService;
+use App\Services\Cinema\GenreAlignmentService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\HlsPackageInsightService;
 use App\Support\CatalogListResponseMapper;
@@ -46,6 +47,7 @@ class AdminSeriesController extends Controller
         private readonly CinemaSynopsisHelper $synopsisHelper,
         private readonly PublishScheduleService $publishScheduleService,
         private readonly GenreCatalogService $genreCatalogService,
+        private readonly GenreAlignmentService $genreAlignmentService,
         private readonly CountryCatalogService $countryCatalogService,
         private readonly AdminReferenceOptionsService $adminReferenceOptionsService,
         private readonly AdminCatalogSummaryService $adminCatalogSummaryService,
@@ -246,10 +248,10 @@ class AdminSeriesController extends Controller
             ], 422);
         }
 
-        $localizedGenres = $this->resolveLocalizedGenres($validated);
+        $alignedGenres = $this->alignGenresFromValidated($validated);
         $validated = $this->applyLocalizedContentSynopsis($validated);
 
-        $series = DB::transaction(function () use ($validated, $request, $localizedGenres) {
+        $series = DB::transaction(function () use ($validated, $request, $alignedGenres) {
             $slug = $this->resolveUniqueSlug([
                 $validated['slug'] ?? null,
                 $validated['original_title'] ?? null,
@@ -267,7 +269,7 @@ class AdminSeriesController extends Controller
             $audioFlags = $this->extractAudioFlags($validated['seasons'] ?? []);
 
             $series = Series::create([
-                ...$this->baseSeriesAttributes($validated, $slug, $localizedGenres),
+                ...$this->baseSeriesAttributes($validated, $slug, $alignedGenres),
                 'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
                 'number_of_seasons' => $validated['number_of_seasons'] ?? ($seasonPayloads->count() ?: null),
                 'number_of_episodes' => $validated['number_of_episodes'] ?? ($episodeTotal ?: null),
@@ -276,7 +278,7 @@ class AdminSeriesController extends Controller
                 'publish_status' => $publishState['publish_status'],
                 'scheduled_for' => $publishState['scheduled_for'],
                 'published_at' => $publishState['published_at'],
-                'metadata' => $this->buildSeriesMetadata($validated, $localizedGenres),
+                'metadata' => $this->buildSeriesMetadata($validated, $alignedGenres),
                 'created_by' => $request->user()?->id,
             ]);
 
@@ -286,7 +288,7 @@ class AdminSeriesController extends Controller
                 $this->nullableString($validated['hls_base_url'] ?? null),
             );
 
-            $this->syncSeriesCatalogFields($series, $validated, $localizedGenres);
+            $this->syncSeriesCatalogFields($series, $validated, $alignedGenres);
             $this->applySeriesImageIngestion($series, $validated);
 
             return $series;
@@ -346,12 +348,12 @@ class AdminSeriesController extends Controller
             ], 422);
         }
 
-        $localizedGenres = $this->resolveLocalizedGenres($validated);
+        $alignedGenres = $this->alignGenresFromValidated($validated);
         $validated = $this->applyLocalizedContentSynopsis($validated, $series);
 
         $this->watchProgressLifecycle->purgeForSeries($series->id);
 
-        $updated = DB::transaction(function () use ($series, $validated, $localizedGenres) {
+        $updated = DB::transaction(function () use ($series, $validated, $alignedGenres) {
             $slug = $this->resolveUniqueSlug([
                 $validated['slug'] ?? null,
                 $validated['original_title'] ?? null,
@@ -373,7 +375,7 @@ class AdminSeriesController extends Controller
             $audioFlags = $this->extractAudioFlags($validated['seasons'] ?? []);
 
             $series->update([
-                ...$this->baseSeriesAttributes($validated, $slug, $localizedGenres),
+                ...$this->baseSeriesAttributes($validated, $slug, $alignedGenres),
                 'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
                 'number_of_seasons' => $validated['number_of_seasons'] ?? ($seasonPayloads->count() ?: null),
                 'number_of_episodes' => $validated['number_of_episodes'] ?? ($episodeTotal ?: null),
@@ -382,7 +384,7 @@ class AdminSeriesController extends Controller
                 'publish_status' => $publishState['publish_status'],
                 'scheduled_for' => $publishState['scheduled_for'],
                 'published_at' => $publishState['published_at'],
-                'metadata' => $this->buildSeriesMetadata($validated, $localizedGenres),
+                'metadata' => $this->buildSeriesMetadata($validated, $alignedGenres),
             ]);
 
             $this->syncSeasons(
@@ -391,7 +393,7 @@ class AdminSeriesController extends Controller
                 $this->nullableString($validated['hls_base_url'] ?? null),
             );
 
-            $this->syncSeriesCatalogFields($series, $validated, $localizedGenres);
+            $this->syncSeriesCatalogFields($series, $validated, $alignedGenres);
             $this->applySeriesImageIngestion($series, $validated);
 
             return $series;
@@ -687,11 +689,16 @@ class AdminSeriesController extends Controller
     }
 
     /**
-     * @return array<int, string>
+     * @return array{
+     *     labels: array<int, string>,
+     *     ids: array<int, int>,
+     *     slugs: array<int, string>,
+     *     refs: array<int, array{id: int, tmdb_id: int|null, name: string, slug: string}>
+     * }
      */
-    private function resolveLocalizedGenres(array $validated): array
+    private function alignGenresFromValidated(array $validated): array
     {
-        return $this->tmdbService->localizeGenreNames(
+        return $this->genreAlignmentService->align(
             $this->normalizeStringList($validated['genres'] ?? []),
             'tv',
         );
@@ -767,14 +774,15 @@ class AdminSeriesController extends Controller
         ];
     }
 
-    private function syncSeriesCatalogFields(Series $series, array $validated, ?array $localizedGenres = null): void
+    private function syncSeriesCatalogFields(Series $series, array $validated, ?array $alignedGenres = null): void
     {
-        $genres = $localizedGenres ?? $this->resolveLocalizedGenres($validated);
+        $aligned = $alignedGenres ?? $this->alignGenresFromValidated($validated);
         $countries = $this->normalizeStringList($validated['countries'] ?? []);
         $countryIsos = $this->countryCatalogService->resolveIsos($countries);
         $primaryCountry = $countryIsos[0] ?? null;
 
-        $this->genreCatalogService->syncSeriesGenres($series, $genres);
+        $this->genreCatalogService->syncSeriesGenres($series, $aligned['labels']);
+        $this->genreAlignmentService->touchAfterAlignment();
         $series->update([
             'origin_country' => $primaryCountry,
             'original_language' => filled($validated['original_language'] ?? null)
@@ -809,16 +817,15 @@ class AdminSeriesController extends Controller
         ]);
     }
 
-    private function baseSeriesAttributes(array $validated, string $slug, ?array $localizedGenres = null): array
+    private function baseSeriesAttributes(array $validated, string $slug, ?array $alignedGenres = null): array
     {
-        $genres = $localizedGenres ?? $this->resolveLocalizedGenres($validated);
+        $aligned = $alignedGenres ?? $this->alignGenresFromValidated($validated);
         $countries = $this->normalizeStringList($validated['countries'] ?? []);
         $countryIsos = $this->countryCatalogService->resolveIsos($countries);
         $primaryNetwork = $this->firstFilterValue([
             $this->nullableString($validated['network'] ?? null) ?? '',
             $this->nullableString($validated['provider_name'] ?? null) ?? '',
         ]);
-        $filterGenreIds = $this->normalizeFilterIdentifiers($genres);
         $filterCountryIds = $countryIsos;
         $filterNetworkIds = $primaryNetwork ? $this->normalizeFilterIdentifiers([$primaryNetwork]) : [];
 
@@ -852,7 +859,7 @@ class AdminSeriesController extends Controller
 
         if (Schema::hasColumn('series', 'filter_rating')) {
             $attributes['filter_rating'] = isset($validated['rating']) ? (float) $validated['rating'] : null;
-            $attributes['filter_primary_genre'] = $filterGenreIds[0] ?? null;
+            $attributes['filter_primary_genre'] = $aligned['slugs'][0] ?? null;
             $attributes['filter_primary_country'] = $filterCountryIds[0] ?? null;
             $attributes['filter_primary_network'] = $filterNetworkIds[0] ?? null;
         }
@@ -860,16 +867,15 @@ class AdminSeriesController extends Controller
         return $attributes;
     }
 
-    private function buildSeriesMetadata(array $validated, ?array $localizedGenres = null): array
+    private function buildSeriesMetadata(array $validated, ?array $alignedGenres = null): array
     {
-        $genres = $localizedGenres ?? $this->resolveLocalizedGenres($validated);
+        $aligned = $alignedGenres ?? $this->alignGenresFromValidated($validated);
         $countries = $this->normalizeStringList($validated['countries'] ?? []);
         $countryIsos = $this->countryCatalogService->resolveIsos($countries);
         $primaryNetwork = $this->firstFilterValue([
             $this->nullableString($validated['network'] ?? null) ?? '',
             $this->nullableString($validated['provider_name'] ?? null) ?? '',
         ]);
-        $filterGenreIds = $this->normalizeFilterIdentifiers($genres);
         $filterCountryIds = $countryIsos;
         $filterNetworkIds = $primaryNetwork ? $this->normalizeFilterIdentifiers([$primaryNetwork]) : [];
 
@@ -885,7 +891,8 @@ class AdminSeriesController extends Controller
                 'creators' => $this->normalizeStringList($validated['creators'] ?? []),
                 'directors' => $this->normalizeStringList($validated['directors'] ?? []),
                 'writers' => $this->normalizeStringList($validated['writers'] ?? []),
-                'genres' => $genres,
+                'genres' => $aligned['labels'],
+                'genre_refs' => $aligned['refs'],
                 'tags' => $this->normalizeStringList($validated['tags'] ?? []),
                 'languages' => $this->normalizeStringList($validated['languages'] ?? []),
                 'countries' => $countries,
@@ -924,7 +931,7 @@ class AdminSeriesController extends Controller
                 ],
             ],
             'filters' => [
-                'genre_ids' => $filterGenreIds,
+                'genre_ids' => array_map('strval', $aligned['ids']),
                 'country_ids' => $filterCountryIds,
                 'network_ids' => $filterNetworkIds,
             ],
@@ -1364,10 +1371,10 @@ class AdminSeriesController extends Controller
                     'creators' => data_get($metadata, 'tmdb.creators', []),
                     'directors' => data_get($metadata, 'tmdb.directors', []),
                     'writers' => data_get($metadata, 'tmdb.writers', []),
-                    'genres' => $this->tmdbService->localizeGenreNames(
-                        data_get($metadata, 'tmdb.genres', []),
+                    'genres' => $this->genreAlignmentService->align(
+                        data_get($metadata, 'tmdb.genre_refs', data_get($metadata, 'tmdb.genres', [])),
                         'tv',
-                    ),
+                    )['labels'],
                     'tags' => data_get($metadata, 'tmdb.tags', []),
                     'languages' => data_get($metadata, 'tmdb.languages', []),
                     'countries' => data_get($metadata, 'tmdb.countries', []),

@@ -47,7 +47,7 @@ class CatalogGenreManifest
         ['slug' => 'kids', 'name' => 'کودکان', 'tmdb_id' => 10762, 'type' => 'tv'],
         ['slug' => 'news', 'name' => 'اخبار', 'tmdb_id' => 10763, 'type' => 'tv'],
         ['slug' => 'reality', 'name' => 'واقعی', 'tmdb_id' => 10764, 'type' => 'tv'],
-        ['slug' => 'sci-fi-fantasy', 'name' => 'علمی‌تخیلی و فانتزی', 'tmdb_id' => 10765, 'type' => 'tv'],
+        ['slug' => 'sci-fi-fantasy', 'name' => 'علمی تخیلی و فانتزی', 'tmdb_id' => 10765, 'type' => 'tv'],
         ['slug' => 'soap', 'name' => 'داستان شبانی', 'tmdb_id' => 10766, 'type' => 'tv'],
         ['slug' => 'short', 'name' => 'کوتاه', 'tmdb_id' => null, 'type' => 'both'],
         ['slug' => 'anime', 'name' => 'انیمه', 'tmdb_id' => null, 'type' => 'tv'],

@@ -29,7 +29,7 @@ class BackfillGenres extends Command
         Movie::query()->chunkById(50, function ($movies) use ($genreCatalogService, $countryCatalogService, &$movieCount): void {
             foreach ($movies as $movie) {
                 $metadata = is_array($movie->metadata) ? $movie->metadata : [];
-                $rawGenres = data_get($metadata, 'tmdb.genres', []);
+                $rawGenres = data_get($metadata, 'tmdb.genre_refs', data_get($metadata, 'tmdb.genres', []));
                 if (is_array($rawGenres) && $rawGenres !== []) {
                     $genreCatalogService->syncMovieGenres($movie, $rawGenres);
                 }
@@ -46,7 +46,7 @@ class BackfillGenres extends Command
         Series::query()->chunkById(50, function ($seriesItems) use ($genreCatalogService, $countryCatalogService, &$seriesCount): void {
             foreach ($seriesItems as $series) {
                 $metadata = is_array($series->metadata) ? $series->metadata : [];
-                $rawGenres = data_get($metadata, 'tmdb.genres', []);
+                $rawGenres = data_get($metadata, 'tmdb.genre_refs', data_get($metadata, 'tmdb.genres', []));
                 if (is_array($rawGenres) && $rawGenres !== []) {
                     $genreCatalogService->syncSeriesGenres($series, $rawGenres);
                 }
