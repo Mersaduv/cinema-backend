@@ -51,6 +51,12 @@ class CatalogListResponseMapper
                     'email' => $row['created_by_email'] ?? null,
                 ]
                 : null,
+            'filter_popularity' => isset($row['filter_popularity']) ? (float) $row['filter_popularity'] : null,
+            'vote_count' => isset($row['vote_count']) ? (int) $row['vote_count'] : null,
+            'trending_rank' => isset($row['trending_rank']) ? (int) $row['trending_rank'] : null,
+            'internal_popularity_30d' => isset($row['internal_popularity_30d'])
+                ? (int) $row['internal_popularity_30d']
+                : null,
         ];
     }
 
@@ -86,6 +92,12 @@ class CatalogListResponseMapper
                     'name' => $row['created_by_name'] ?? null,
                     'email' => $row['created_by_email'] ?? null,
                 ]
+                : null,
+            'filter_popularity' => isset($row['filter_popularity']) ? (float) $row['filter_popularity'] : null,
+            'vote_count' => isset($row['vote_count']) ? (int) $row['vote_count'] : null,
+            'trending_rank' => isset($row['trending_rank']) ? (int) $row['trending_rank'] : null,
+            'internal_popularity_30d' => isset($row['internal_popularity_30d'])
+                ? (int) $row['internal_popularity_30d']
                 : null,
         ];
     }
@@ -143,6 +155,108 @@ class CatalogListResponseMapper
                 'genres' => CatalogListPresentation::posterGenreLine($genres),
                 'rating' => $rating,
                 'backdrop_url' => $backdropUrl,
+            ],
+        ];
+    }
+
+    /**
+     * Slim carousel card DTO — genres included for hover overlay; no synopsis or backdrop payloads.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  array<int, array<int, array<string, mixed>>>  $genreMap
+     * @return array<string, mixed>
+     */
+    public function carouselMovieItem(array $row, array $genreMap = []): array
+    {
+        $metadata = $this->decodeMetadata($row['metadata'] ?? null);
+        $movieId = (int) $row['id'];
+        $genres = collect($genreMap[$movieId] ?? [])
+            ->map(fn (array $genre) => new Genre([
+                'id' => $genre['id'],
+                'name' => $genre['name'],
+                'slug' => $genre['slug'] ?? null,
+                'type' => $genre['type'] ?? 'movie',
+            ]));
+
+        $rating = CatalogListPresentation::listRating(
+            isset($row['filter_rating']) ? (float) $row['filter_rating'] : null,
+            $metadata,
+        );
+
+        $posterImage = $this->imagePresentationService->moviePosterImage($metadata);
+        $posterUrl = $this->imagePresentationService->resolveMoviePosterUrl(
+            $row['poster_path'] ?? null,
+            $metadata,
+        );
+
+        return [
+            'id' => $movieId,
+            'slug' => (string) ($row['slug'] ?? ''),
+            'title' => (string) ($row['title'] ?? ''),
+            'release_year' => isset($row['release_year']) ? (int) $row['release_year'] : null,
+            'filter_rating' => isset($row['filter_rating']) ? (float) $row['filter_rating'] : null,
+            'rating' => $rating,
+            'content_type' => 'movie',
+            'poster_url' => $posterUrl,
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
+            'has_subtitle' => (bool) ($row['has_subtitle'] ?? false),
+            'has_dubbed_audio' => (bool) ($row['has_dubbed_audio'] ?? false),
+            'genres' => $this->genreCatalogService->serializeGenres($genres),
+            'details' => [
+                'genres' => CatalogListPresentation::posterGenreLine($genres),
+                'rating' => $rating,
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @param  array<int, array<int, array<string, mixed>>>  $genreMap
+     * @return array<string, mixed>
+     */
+    public function carouselSeriesItem(array $row, array $genreMap = []): array
+    {
+        $metadata = $this->decodeMetadata($row['metadata'] ?? null);
+        $seriesId = (int) $row['id'];
+        $genres = collect($genreMap[$seriesId] ?? [])
+            ->map(fn (array $genre) => new Genre([
+                'id' => $genre['id'],
+                'name' => $genre['name'],
+                'slug' => $genre['slug'] ?? null,
+                'type' => $genre['type'] ?? 'tv',
+            ]));
+
+        $rating = CatalogListPresentation::listRating(
+            isset($row['filter_rating']) ? (float) $row['filter_rating'] : null,
+            $metadata,
+        );
+
+        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
+        $posterUrl = $this->imagePresentationService->resolveSeriesPosterUrl(
+            $row['poster_url'] ?? null,
+            $metadata,
+        );
+
+        return [
+            'id' => $seriesId,
+            'slug' => (string) ($row['slug'] ?? ''),
+            'title' => (string) ($row['title'] ?? ''),
+            'release_year' => isset($row['release_year']) ? (int) $row['release_year'] : null,
+            'filter_rating' => isset($row['filter_rating']) ? (float) $row['filter_rating'] : null,
+            'rating' => $rating,
+            'content_type' => 'series',
+            'poster_url' => $posterUrl,
+            'poster_blur_url' => data_get($posterImage, 'blur'),
+            'poster_srcset' => data_get($posterImage, 'srcset_string'),
+            'poster_image' => $posterImage,
+            'has_subtitle' => (bool) ($row['has_subtitle'] ?? false),
+            'has_dubbed' => (bool) ($row['has_dubbed'] ?? false),
+            'genres' => $this->genreCatalogService->serializeGenres($genres),
+            'details' => [
+                'genres' => CatalogListPresentation::posterGenreLine($genres),
+                'rating' => $rating,
             ],
         ];
     }

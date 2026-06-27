@@ -167,7 +167,9 @@ class CatalogListProcedureService
     private function executeProcedure(string $name, array $params): \PDOStatement
     {
         $pdo = DB::connection()->getPdo();
-        $pdo->exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci");
+
+        // Align session collation with catalog text columns (utf8mb4_unicode_ci).
+        $pdo->exec('SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci');
         $pdo->exec("SET collation_connection = 'utf8mb4_unicode_ci'");
 
         $placeholders = implode(', ', array_fill(0, count($params), '?'));

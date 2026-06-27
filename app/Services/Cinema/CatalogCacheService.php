@@ -21,6 +21,20 @@ class CatalogCacheService
         return $namespace.'_g'.$this->catalogGeneration().'_'.$fingerprint;
     }
 
+    /**
+     * Stable cache fingerprint for catalog list requests.
+     * Includes carousel mode, cursor, page size, and all filter params.
+     */
+    public function catalogListFingerprint(\Illuminate\Http\Request $request): string
+    {
+        $params = $request->query();
+        ksort($params);
+
+        $normalized = http_build_query($params);
+
+        return md5($normalized);
+    }
+
     public function bumpCatalogGeneration(): int
     {
         $next = $this->catalogGeneration() + 1;

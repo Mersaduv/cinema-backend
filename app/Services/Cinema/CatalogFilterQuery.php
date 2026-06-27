@@ -12,6 +12,7 @@ class CatalogFilterQuery
     public function __construct(
         private readonly CountryCatalogService $countryCatalogService,
         private readonly GenreCatalogService $genreCatalogService,
+        private readonly CatalogRankingService $catalogRankingService,
     ) {}
 
     /**
@@ -326,6 +327,8 @@ class CatalogFilterQuery
         }
 
         $query->reorder();
+        $minVotes = $this->catalogRankingService->topRatedMinVoteCount();
+        $staleHours = $this->catalogRankingService->trendingStaleHours();
 
         return match ($sort) {
             'oldest' => $query->orderBy('published_at')->orderBy('id'),
@@ -333,12 +336,93 @@ class CatalogFilterQuery
             'title_desc' => $query->orderByDesc('title')->orderBy('id'),
             'release_year_asc', 'year_asc' => $query->orderBy('release_year')->orderBy('id'),
             'release_year_desc', 'year_desc' => $query->orderByDesc('release_year')->orderByDesc('id'),
-            'top_rated', 'imdb_desc' => $this->hasColumn($table, 'filter_rating')
-                ? $query->orderByDesc('filter_rating')->orderByDesc('id')
-                : $query->orderByDesc('published_at'),
-            'popular', 'newest' => $query->orderByDesc('published_at')->orderByDesc('id'),
+            'newest' => $query->orderByDesc('published_at')->orderByDesc('id'),
+            'popular' => $this->hasColumn($table, 'filter_popularity')
+                ? $query->orderByDesc('filter_popularity')->orderByDesc('id')
+                : $query->orderByDesc('published_at')->orderByDesc('id'),
+            'popular_hybrid' => $this->hasColumn($table, 'popular_hybrid_score')
+                ? $query->orderByDesc('popular_hybrid_score')->orderByDesc('id')
+                : ($this->hasColumn($table, 'filter_popularity')
+                    ? $query->orderByDesc('filter_popularity')->orderByDesc('id')
+                    : $query->orderByDesc('published_at')->orderByDesc('id')),
+            'trending' => $this->applyTrendingSort($query, $table, $staleHours),
+            'trending_fallback' => $this->applyTrendingFallbackSort($query, $table),
+            'top_rated', 'imdb_desc' => $this->applyTopRatedSort($query, $table, $minVotes),
             default => $query->orderByDesc('published_at')->orderByDesc('id'),
         };
+    }
+
+    /**
+     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     */
+    private function applyTopRatedSort(Builder $query, string $table, int $minVotes): Builder
+    {
+        if (! $this->hasColumn($table, 'filter_rating')) {
+            return $query->orderByDesc('published_at')->orderByDesc('id');
+        }
+
+        if ($this->hasColumn($table, 'vote_count')) {
+            $query->orderByRaw(
+                'CASE WHEN vote_count IS NOT NULL AND vote_count >= ? THEN 0 ELSE 1 END',
+                [$minVotes],
+            );
+        }
+
+        return $query->orderByDesc('filter_rating')->orderByDesc('id');
+    }
+
+    /**
+     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     */
+    private function applyTrendingSort(Builder $query, string $table, int $staleHours): Builder
+    {
+        if (! $this->hasColumn($table, 'trending_rank')) {
+            return $this->applyTrendingFallbackSort($query, $table);
+        }
+
+        $query->orderByRaw(
+            "CASE WHEN trending_rank IS NOT NULL AND trending_synced_at >= DATE_SUB(NOW(), INTERVAL {$staleHours} HOUR) THEN 0 ELSE 1 END",
+        );
+
+        return $query
+            ->orderByRaw(
+                "CASE WHEN trending_rank IS NOT NULL AND trending_synced_at >= DATE_SUB(NOW(), INTERVAL {$staleHours} HOUR) THEN trending_rank END ASC",
+            )
+            ->orderByDesc('id');
+    }
+
+    /**
+     * Approximate trending — NOT TMDB's trending model. Fallback only.
+     *
+     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     */
+    private function applyTrendingFallbackSort(Builder $query, string $table): Builder
+    {
+        if (! $this->hasColumn($table, 'filter_popularity')) {
+            return $query->orderByDesc('published_at')->orderByDesc('id');
+        }
+
+        return $query
+            ->orderByRaw(
+                '(COALESCE(filter_popularity, 0) * GREATEST(0.3, 1.0 - (GREATEST(0, YEAR(NOW()) - COALESCE(release_year, YEAR(NOW()))) * 0.12))) DESC',
+            )
+            ->orderByDesc('id');
+    }
+
+    /**
+     * Keyset pagination — every public catalog sort ends with id DESC,
+     * so cursor pagination can safely use id < cursorId.
+     *
+     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     */
+    public function applyCursor(Builder $query, int $cursorId, string $table): Builder
+    {
+        return $query->where($table.'.id', '<', $cursorId);
+    }
+
+    public function isCarouselMode(Request $request): bool
+    {
+        return $request->boolean('carousel');
     }
 
     /**

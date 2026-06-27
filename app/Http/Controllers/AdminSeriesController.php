@@ -7,6 +7,9 @@ use App\Jobs\SyncSeriesPersonCreditsJob;
 use App\Models\Series;
 use App\Services\Cinema\AdminCatalogSummaryService;
 use App\Services\Cinema\AdminReferenceOptionsService;
+use App\Services\Cinema\CatalogAdminRankingEnricher;
+use App\Services\Cinema\CatalogAdminRankingEnricher;
+use App\Services\Cinema\CatalogPopularityPersistence;
 use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\CountryCatalogService;
@@ -60,6 +63,8 @@ class AdminSeriesController extends Controller
         private readonly ContentPipelineStatusService $contentPipelineStatusService,
         private readonly HlsPackageInsightService $hlsPackageInsightService,
         private readonly WatchProgressLifecycleService $watchProgressLifecycle,
+        private readonly CatalogPopularityPersistence $catalogPopularityPersistence,
+        private readonly CatalogAdminRankingEnricher $catalogAdminRankingEnricher,
     ) {
     }
 
@@ -118,7 +123,7 @@ class AdminSeriesController extends Controller
 
             $series = array_map(
                 fn (array $row) => $this->catalogListResponseMapper->adminSeriesListItem($row),
-                $result['rows'],
+                $this->catalogAdminRankingEnricher->enrich($result['rows'], Series::class),
             );
 
             $lastPage = max(1, (int) ceil($result['total'] / $perPage));
@@ -613,6 +618,8 @@ class AdminSeriesController extends Controller
             'imdb_id' => ['nullable', 'string', 'max:32'],
             'tvdb_id' => ['nullable', 'string', 'max:32'],
             'rating' => ['nullable', 'numeric', 'between:0,10'],
+            'popularity' => ['nullable', 'numeric', 'min:0'],
+            'vote_count' => ['nullable', 'integer', 'min:0'],
             'original_language' => ['nullable', 'string', 'max:12'],
             'creators' => ['nullable', 'array'],
             'creators.*' => ['string', 'max:255'],
@@ -864,7 +871,18 @@ class AdminSeriesController extends Controller
             $attributes['filter_primary_network'] = $filterNetworkIds[0] ?? null;
         }
 
-        return $attributes;
+        [, $voteCountValue] = $this->catalogPopularityPersistence->extractFromValidated($validated);
+        $popularityValue = array_key_exists('popularity', $validated) && $validated['popularity'] !== null
+            ? (float) $validated['popularity']
+            : null;
+        $popularityColumns = $this->catalogPopularityPersistence->applyToMetadata(
+            ['tmdb' => []],
+            $popularityValue,
+            $voteCountValue,
+            'series',
+        )['columns'];
+
+        return array_merge($attributes, $popularityColumns);
     }
 
     private function buildSeriesMetadata(array $validated, ?array $alignedGenres = null): array
@@ -886,6 +904,8 @@ class AdminSeriesController extends Controller
                 'imdb_id' => $this->nullableString($validated['imdb_id'] ?? null),
                 'tvdb_id' => $this->nullableString($validated['tvdb_id'] ?? null),
                 'rating' => isset($validated['rating']) ? (float) $validated['rating'] : null,
+                'popularity' => isset($validated['popularity']) ? (float) $validated['popularity'] : null,
+                'vote_count' => isset($validated['vote_count']) ? (int) $validated['vote_count'] : null,
                 'original_language' => $this->nullableString($validated['original_language'] ?? null),
                 'episode_runtime_minutes' => $validated['episode_runtime_minutes'] ?? null,
                 'creators' => $this->normalizeStringList($validated['creators'] ?? []),

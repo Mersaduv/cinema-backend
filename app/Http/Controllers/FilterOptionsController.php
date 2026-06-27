@@ -56,6 +56,8 @@ class FilterOptionsController extends Controller
                     ['value' => 'title_desc', 'label' => 'عنوان (ی-الف)'],
                     ['value' => 'top_rated', 'label' => 'بهترین امتیاز'],
                     ['value' => 'popular', 'label' => 'محبوب‌ترین'],
+                    ['value' => 'trending', 'label' => 'جدید و محبوب'],
+                    ['value' => 'popular_hybrid', 'label' => 'محبوب در سینما'],
                 ],
                 'genre_id_aliases' => $this->genreCatalogService->buildGenreIdAliasMap(),
             ];

@@ -80,4 +80,11 @@ return [
             'codecs' => 'avc1.640028,mp4a.40.2',
         ],
     ],
+    'popular_hybrid_tmdb_weight' => (float) env('CINEMA_POPULAR_HYBRID_TMDB_WEIGHT', 0.6),
+    'popular_hybrid_internal_weight' => (float) env('CINEMA_POPULAR_HYBRID_INTERNAL_WEIGHT', 0.4),
+    'catalog' => [
+        'top_rated_min_vote_count' => (int) env('CINEMA_TOP_RATED_MIN_VOTE_COUNT', 30),
+        'trending_stale_hours' => (int) env('CINEMA_TRENDING_STALE_HOURS', 48),
+        'trending_fallback_min_items' => (int) env('CINEMA_TRENDING_FALLBACK_MIN_ITEMS', 6),
+    ],
 ];

@@ -3,6 +3,7 @@
 namespace App\GraphQL\Builders;
 
 use App\Models\Movie;
+use App\Services\Cinema\CatalogFilterQuery;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Schema;
 
@@ -91,24 +92,7 @@ class MovieBuilder
             return;
         }
 
-        $query->reorder();
-
-        match ($normalized) {
-            'newest' => $query->orderByDesc('release_year')->orderByDesc('id'),
-            'oldest' => $query->orderBy('release_year')->orderBy('id'),
-            'title_asc' => $query->orderBy('title')->orderBy('id'),
-            'title_desc' => $query->orderByDesc('title')->orderBy('id'),
-            'top_rated', 'popular' => Schema::hasColumn('movies', 'filter_rating')
-                ? $query->orderByDesc('filter_rating')->orderByDesc('id')
-                : $query->orderByDesc('id'),
-            'imdb_desc' => Schema::hasColumn('movies', 'filter_rating')
-                ? $query->orderByDesc('filter_rating')->orderByDesc('id')
-                : $query->orderByDesc('id'),
-            'imdb_asc' => Schema::hasColumn('movies', 'filter_rating')
-                ? $query->orderBy('filter_rating')->orderByDesc('id')
-                : $query->orderByDesc('id'),
-            default => $query->latest('published_at'),
-        };
+        app(CatalogFilterQuery::class)->applySort($query, $normalized, 'movies');
     }
 
     /**

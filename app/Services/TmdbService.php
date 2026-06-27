@@ -1914,4 +1914,82 @@ class TmdbService
     {
         return trim((string) ($language ?: config('services.tmdb.default_language', 'fa-IR'))) ?: 'fa-IR';
     }
+
+    /**
+     * Lightweight TMDB detail fetch for popularity refresh / backfill.
+     *
+     * @return array{popularity: ?float, vote_count: ?int, vote_average: ?float}
+     */
+    public function fetchPopularitySnapshot(int $tmdbId, string $mediaType = 'movie'): array
+    {
+        if ($tmdbId <= 0) {
+            return ['popularity' => null, 'vote_count' => null, 'vote_average' => null];
+        }
+
+        $path = $mediaType === 'series' ? "/tv/{$tmdbId}" : "/movie/{$tmdbId}";
+        $payload = $this->requestCached($path, ['language' => 'en-US']);
+
+        return [
+            'popularity' => isset($payload['popularity'])
+                ? round((float) $payload['popularity'], 3)
+                : null,
+            'vote_count' => isset($payload['vote_count'])
+                ? max(0, (int) $payload['vote_count'])
+                : null,
+            'vote_average' => isset($payload['vote_average'])
+                ? round((float) $payload['vote_average'], 3)
+                : null,
+        ];
+    }
+
+    /**
+     * @return array<int, array{id: int, popularity: ?float, vote_average: ?float, vote_count: ?int}>
+     */
+    public function fetchTrendingMovies(string $window = 'day'): array
+    {
+        return $this->fetchTrendingList('/trending/movie/'.$window);
+    }
+
+    /**
+     * @return array<int, array{id: int, popularity: ?float, vote_average: ?float, vote_count: ?int}>
+     */
+    public function fetchTrendingSeries(string $window = 'day'): array
+    {
+        return $this->fetchTrendingList('/trending/tv/'.$window);
+    }
+
+    /**
+     * @return array<int, array{id: int, popularity: ?float, vote_average: ?float, vote_count: ?int}>
+     */
+    private function fetchTrendingList(string $path): array
+    {
+        $payload = $this->requestCached($path, ['language' => 'en-US']);
+        $results = is_array($payload['results'] ?? null) ? $payload['results'] : [];
+
+        return collect($results)
+            ->map(function (array $item, int $index): ?array {
+                $id = (int) ($item['id'] ?? 0);
+
+                if ($id <= 0) {
+                    return null;
+                }
+
+                return [
+                    'id' => $id,
+                    'rank' => $index + 1,
+                    'popularity' => isset($item['popularity'])
+                        ? round((float) $item['popularity'], 3)
+                        : null,
+                    'vote_average' => isset($item['vote_average'])
+                        ? round((float) $item['vote_average'], 3)
+                        : null,
+                    'vote_count' => isset($item['vote_count'])
+                        ? max(0, (int) $item['vote_count'])
+                        : null,
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+    }
 }

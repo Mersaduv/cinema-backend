@@ -10,6 +10,8 @@ use App\Models\SeriesCrew;
 use App\Models\SeriesEpisode;
 use App\Models\SeriesSeason;
 use App\Services\Cinema\CatalogCacheService;
+use App\Services\Cinema\CatalogCarouselCursor;
+use App\Services\Cinema\CatalogCarouselService;
 use App\Services\Cinema\CatalogFilterQuery;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\GenreCatalogService;
@@ -34,6 +36,7 @@ class PublicSeriesController extends Controller
         private readonly CatalogListProcedureService $catalogListProcedureService,
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
+        private readonly CatalogCarouselService $catalogCarouselService,
         private readonly RelatedContentService $relatedContentService,
         private readonly ImagePresentationService $imagePresentationService,
     ) {
@@ -41,11 +44,15 @@ class PublicSeriesController extends Controller
 
     public function index(Request $request): JsonResponse
     {
+        if ($this->catalogFilterQuery->isCarouselMode($request)) {
+            return $this->carouselIndex($request);
+        }
+
         $page = max(1, (int) $request->integer('page', 1));
         $perPage = min(max((int) $request->integer('per_page', 24), 1), 48);
         $cacheKey = $this->catalogCacheService->listCacheKey(
             'series_list',
-            md5($request->getQueryString() ?? ''),
+            $this->catalogCacheService->catalogListFingerprint($request),
         );
 
         $payload = Cache::remember($cacheKey, 300, function () use ($request, $page, $perPage) {
@@ -87,6 +94,66 @@ class PublicSeriesController extends Controller
 
         return response()
             ->json(['success' => true, 'data' => $payload])
+            ->withHeaders([
+                'Cache-Control' => 'public, max-age=300, stale-while-revalidate=60',
+                'Vary' => 'Accept-Encoding',
+            ]);
+    }
+
+    private function carouselIndex(Request $request): JsonResponse
+    {
+        $perPage = min(max((int) $request->integer('per_page', 6), 1), 48);
+        $cacheKey = $this->catalogCacheService->listCacheKey(
+            'series_list',
+            $this->catalogCacheService->catalogListFingerprint($request),
+        );
+
+        $payload = Cache::remember($cacheKey, 300, function () use ($request, $perPage) {
+            $params = $this->catalogFilterQuery->procedureParams($request, 'series');
+            $result = $this->catalogCarouselService->fetchSeries($request, $perPage);
+
+            $seriesIds = array_map(fn (array $row) => (int) $row['id'], $result['rows']);
+            $genreMap = $this->catalogListResponseMapper->seriesGenreMap($seriesIds);
+
+            $items = array_map(
+                fn (array $row) => $this->catalogListResponseMapper->carouselSeriesItem($row, $genreMap),
+                $result['rows'],
+            );
+
+            $lastRow = $result['rows'] !== [] ? $result['rows'][array_key_last($result['rows'])] : null;
+            $loadedCount = count($items);
+            $total = $result['total'];
+            $hasMore = $result['has_extra'] ?? false;
+
+            $nextCursor = null;
+            if ($hasMore && is_array($lastRow)) {
+                $sortValue = $this->catalogCarouselService->sortValueFromSeriesRow(
+                    $lastRow,
+                    $params['sort'],
+                );
+                $nextCursor = CatalogCarouselCursor::encode((int) $lastRow['id'], $sortValue);
+            }
+
+            $currentPage = max(1, (int) ($result['current_page'] ?? 1));
+
+            return [
+                'items' => $items,
+                'meta' => [
+                    'current_page' => $currentPage,
+                    'per_page' => $perPage,
+                    'total' => $total,
+                    'has_more' => $hasMore && $loadedCount < $total,
+                    'next_cursor' => $nextCursor,
+                ],
+            ];
+        });
+
+        return response()
+            ->json([
+                'success' => true,
+                'data' => $payload['items'],
+                'meta' => $payload['meta'],
+            ])
             ->withHeaders([
                 'Cache-Control' => 'public, max-age=300, stale-while-revalidate=60',
                 'Vary' => 'Accept-Encoding',

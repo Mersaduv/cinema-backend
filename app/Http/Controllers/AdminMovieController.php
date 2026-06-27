@@ -11,6 +11,8 @@ use App\Models\MovieCast;
 use App\Models\MovieCrew;
 use App\Services\Cinema\AdminCatalogSummaryService;
 use App\Services\Cinema\AdminReferenceOptionsService;
+use App\Services\Cinema\CatalogAdminRankingEnricher;
+use App\Services\Cinema\CatalogPopularityPersistence;
 use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CollectionService;
 use App\Services\Cinema\CountryCatalogService;
@@ -62,6 +64,8 @@ class AdminMovieController extends Controller
         private readonly ImagePresentationService $imagePresentationService,
         private readonly ContentPipelineLauncher $contentPipelineLauncher,
         private readonly ContentPipelineStatusService $contentPipelineStatusService,
+        private readonly CatalogPopularityPersistence $catalogPopularityPersistence,
+        private readonly CatalogAdminRankingEnricher $catalogAdminRankingEnricher,
     ) {
     }
 
@@ -109,7 +113,7 @@ class AdminMovieController extends Controller
 
             $movies = array_map(
                 fn (array $row) => $this->catalogListResponseMapper->adminMovieListItem($row),
-                $result['rows'],
+                $this->catalogAdminRankingEnricher->enrich($result['rows'], Movie::class),
             );
 
             $lastPage = max(1, (int) ceil($result['total'] / $perPage));
@@ -345,6 +349,8 @@ class AdminMovieController extends Controller
             'imdb_id' => ['nullable', 'string', 'max:32'],
             'tmdb_query' => ['nullable', 'string', 'max:255'],
             'rating' => ['nullable', 'numeric', 'between:0,10'],
+            'popularity' => ['nullable', 'numeric', 'min:0'],
+            'vote_count' => ['nullable', 'integer', 'min:0'],
             'original_language' => ['nullable', 'string', 'max:12'],
             'runtime_minutes' => ['nullable', 'integer', 'min:1', 'max:999'],
             'directors' => ['nullable', 'array'],
@@ -536,6 +542,8 @@ class AdminMovieController extends Controller
                     'tmdb_id' => $validated['tmdb_id'] ?? null,
                     'imdb_id' => filled($validated['imdb_id'] ?? null) ? trim((string) $validated['imdb_id']) : null,
                     'rating' => isset($validated['rating']) ? (float) $validated['rating'] : null,
+                    'popularity' => isset($validated['popularity']) ? (float) $validated['popularity'] : null,
+                    'vote_count' => isset($validated['vote_count']) ? (int) $validated['vote_count'] : null,
                     'original_language' => filled($validated['original_language'] ?? null)
                         ? trim((string) $validated['original_language'])
                         : null,
@@ -583,6 +591,15 @@ class AdminMovieController extends Controller
         );
         $metadata = $imageResult['metadata'];
 
+        [$popularityValue, $voteCountValue] = $this->catalogPopularityPersistence->extractFromValidated($validated);
+        $popularityApplied = $this->catalogPopularityPersistence->applyToMetadata(
+            $metadata,
+            $popularityValue,
+            $voteCountValue,
+            'movies',
+        );
+        $metadata = $popularityApplied['metadata'];
+
         $movieUpdate = [
             'title' => $validated['title'],
             'slug' => $validated['slug'],
@@ -621,6 +638,7 @@ class AdminMovieController extends Controller
                 'filter_primary_genre' => $primaryGenre,
                 'filter_primary_country' => $primaryCountry,
                 'filter_primary_network' => $primaryNetworkId,
+                ...$popularityApplied['columns'],
             ];
         }
 
@@ -1132,6 +1150,8 @@ class AdminMovieController extends Controller
                     'logo_source_url' => data_get($metadata, 'tmdb.logo_source_url'),
                     'trailer_url' => data_get($metadata, 'tmdb.trailer_url'),
                     'rating' => data_get($metadata, 'tmdb.rating'),
+                    'popularity' => data_get($metadata, 'tmdb.popularity'),
+                    'vote_count' => data_get($metadata, 'tmdb.vote_count'),
                     'original_language' => data_get($metadata, 'tmdb.original_language'),
                     'runtime_minutes' => data_get($metadata, 'tmdb.runtime_minutes'),
                     'directors' => data_get($metadata, 'tmdb.directors', []),
