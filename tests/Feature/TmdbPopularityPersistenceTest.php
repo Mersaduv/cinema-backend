@@ -53,6 +53,8 @@ class TmdbPopularityPersistenceTest extends TestCase
         $this->assertSame(28000, (int) $movie->vote_count);
         $this->assertSame(91.234, (float) data_get($movie->metadata, 'tmdb.popularity'));
         $this->assertSame(28000, (int) data_get($movie->metadata, 'tmdb.vote_count'));
+        $this->assertNotNull($movie->popular_hybrid_score);
+        $this->assertGreaterThan(0, (float) $movie->popular_hybrid_score);
     }
 
     private function createAdminUser(): User

@@ -3,17 +3,17 @@
 namespace App\Services\Cinema;
 
 use App\Jobs\PublishScheduledItemJob;
+use App\Jobs\RefreshTrendingJob;
 use App\Models\Movie;
 use App\Models\Series;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Date;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 
 class PublishScheduleService
 {
     public function __construct(
         private readonly CatalogCacheService $catalogCache,
+        private readonly CatalogContentRankingSyncService $catalogContentRankingSyncService,
     ) {
     }
 
@@ -140,7 +140,7 @@ class PublishScheduleService
             ]);
 
             $this->catalogCache->scheduleRebuildAfterContentChange();
-            $this->revalidateNextPublicCache(false, true);
+            $this->catalogContentRankingSyncService->syncOnPublish($series->fresh());
 
             return true;
         }
@@ -165,7 +165,7 @@ class PublishScheduleService
         ]);
 
         $this->catalogCache->scheduleRebuildAfterContentChange();
-        $this->revalidateNextPublicCache(true, false);
+        $this->catalogContentRankingSyncService->syncOnPublish($movie->fresh());
 
         return true;
     }
@@ -193,6 +193,7 @@ class PublishScheduleService
                         'publish_status' => 'published',
                         'published_at' => $moment,
                     ]);
+                    $this->catalogContentRankingSyncService->syncOnPublish($movie->fresh());
                     $movieCount++;
                 }
             });
@@ -211,51 +212,20 @@ class PublishScheduleService
                         'publish_status' => 'published',
                         'published_at' => $moment,
                     ]);
+                    $this->catalogContentRankingSyncService->syncOnPublish($series->fresh());
                     $seriesCount++;
                 }
             });
 
         if ($movieCount > 0 || $seriesCount > 0) {
             $this->catalogCache->scheduleRebuildAfterContentChange();
-            $this->revalidateNextPublicCache($movieCount > 0, $seriesCount > 0);
+            RefreshTrendingJob::dispatch('day')->afterResponse();
         }
 
         return [
             'movies' => $movieCount,
             'series' => $seriesCount,
         ];
-    }
-
-    private function revalidateNextPublicCache(bool $movies, bool $series): void
-    {
-        $url = env('NEXT_REVALIDATION_URL');
-        $secret = env('NEXT_REVALIDATION_SECRET');
-
-        if (! filled($url) || ! filled($secret)) {
-            return;
-        }
-
-        try {
-            if ($movies) {
-                Http::timeout(5)->post(rtrim((string) $url, '/').'/api/revalidate', [
-                    'secret' => $secret,
-                    'path' => '/movies',
-                    'tag' => 'movies',
-                ]);
-            }
-
-            if ($series) {
-                Http::timeout(5)->post(rtrim((string) $url, '/').'/api/revalidate', [
-                    'secret' => $secret,
-                    'path' => '/series',
-                    'tag' => 'series',
-                ]);
-            }
-        } catch (\Throwable $exception) {
-            Log::warning('Next.js cache revalidation failed', [
-                'message' => $exception->getMessage(),
-            ]);
-        }
     }
 
     private function isScheduleDue(mixed $scheduledFor, Carbon $moment): bool

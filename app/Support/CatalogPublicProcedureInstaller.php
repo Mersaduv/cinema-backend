@@ -72,6 +72,9 @@ class CatalogPublicProcedureInstaller
             ? "CASE WHEN p_sort IN ('top_rated', 'imdb_desc') AND COALESCE(s.vote_count, 0) >= {$minVotes} THEN 0 ELSE 1 END ASC,"
             : '';
 
+        $movieVisibility = CatalogVisibilitySql::publicListWhere('m');
+        $seriesVisibility = CatalogVisibilitySql::publicListWhere('s');
+
         DB::unprepared('DROP PROCEDURE IF EXISTS sp_GetPublicMoviesCatalog');
         DB::unprepared("
             CREATE PROCEDURE sp_GetPublicMoviesCatalog(
@@ -103,9 +106,13 @@ class CatalogPublicProcedureInstaller
                     m.origin_country,
                     m.original_language,
                     m.published_at,
+                    m.is_featured,
+                    m.exclude_from_slider,
+                    m.catalog_visibility,
                     m.metadata
                 FROM movies m
                 WHERE m.publish_status = 'published'
+                    {$movieVisibility}
                     AND (
                         IFNULL(TRIM(p_search), '') = ''
                         OR (
@@ -146,6 +153,7 @@ class CatalogPublicProcedureInstaller
                 SELECT COUNT(*) AS total
                 FROM movies m
                 WHERE m.publish_status = 'published'
+                    {$movieVisibility}
                     AND (
                         IFNULL(TRIM(p_search), '') = ''
                         OR (
@@ -209,9 +217,13 @@ class CatalogPublicProcedureInstaller
                     s.origin_country,
                     s.original_language,
                     s.published_at,
+                    s.is_featured,
+                    s.exclude_from_slider,
+                    s.catalog_visibility,
                     s.metadata
                 FROM series s
                 WHERE s.publish_status = 'published'
+                    {$seriesVisibility}
                     AND (
                         IFNULL(TRIM(p_search), '') = ''
                         OR (
@@ -252,6 +264,7 @@ class CatalogPublicProcedureInstaller
                 SELECT COUNT(*) AS total
                 FROM series s
                 WHERE s.publish_status = 'published'
+                    {$seriesVisibility}
                     AND (
                         IFNULL(TRIM(p_search), '') = ''
                         OR (

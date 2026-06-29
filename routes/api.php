@@ -123,6 +123,7 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::get('/media-browser/roots', [AdminMediaBrowserController::class, 'roots']);
     Route::get('/media-browser/entries', [AdminMediaBrowserController::class, 'entries']);
 
+    Route::get('/movies/check-slug', [AdminMovieController::class, 'checkSlug']);
     Route::get('/movies', [AdminMovieController::class, 'index']);
     Route::get('/movies/options', [AdminMovieController::class, 'options']);
     Route::post('/movies', [AdminMovieController::class, 'store']);
@@ -130,6 +131,8 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::post('/movies/preview-hls-package', [AdminMovieController::class, 'previewHlsPackage']);
     Route::post('/movies/check-hls-exists', [AdminMovieController::class, 'checkHlsExists']);
     Route::get('/movies/{movie}', [AdminMovieController::class, 'show']);
+    Route::get('/movies/{movie}/preview-token', [AdminMovieController::class, 'previewToken']);
+    Route::get('/movies/{movie}/history', [AdminMovieController::class, 'history']);
     Route::post('/movies/{movie}/process', [AdminMovieController::class, 'queueProcessing']);
     Route::post('/movies/{movie}/stop-processing', [AdminMovieController::class, 'stopProcessing']);
     Route::match(['put', 'patch'], '/movies/{movie}/draft-form', [AdminMovieController::class, 'updateDraftForm']);
@@ -138,13 +141,17 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::match(['put', 'patch'], '/movies/{movie}/publish-status', [AdminMovieController::class, 'updatePublishStatus']);
     Route::delete('/movies/{movie}', [AdminMovieController::class, 'destroy']);
 
+    Route::get('/series/check-slug', [AdminSeriesController::class, 'checkSlug']);
     Route::get('/series', [AdminSeriesController::class, 'index']);
     Route::get('/series/options', [AdminSeriesController::class, 'options']);
     Route::post('/series', [AdminSeriesController::class, 'store']);
     Route::post('/series/ingest-tmdb-images', [AdminSeriesController::class, 'ingestTmdbImages']);
     Route::post('/series/preview-hls-package', [AdminSeriesController::class, 'previewHlsPackage']);
     Route::get('/series/{series}', [AdminSeriesController::class, 'show']);
+    Route::get('/series/{series}/preview-token', [AdminSeriesController::class, 'previewToken']);
+    Route::get('/series/{series}/history', [AdminSeriesController::class, 'history']);
     Route::match(['put', 'patch'], '/series/{series}', [AdminSeriesController::class, 'update']);
+    Route::match(['put', 'patch'], '/series/{series}/seasons/{seasonNumber}/episodes/{episodeNumber}', [AdminSeriesController::class, 'upsertEpisode']);
     Route::get('/series/{series}/pipeline', [AdminSeriesController::class, 'getPipeline']);
     Route::match(['put', 'patch'], '/series/{series}/publish-status', [AdminSeriesController::class, 'updatePublishStatus']);
     Route::delete('/series/{series}', [AdminSeriesController::class, 'destroy']);

@@ -41,8 +41,18 @@ class WatchEpisodeQuery
         $seriesHlsBase = data_get($seriesMetadata, 'playback.hls_base_url');
         $seasonHlsBase = data_get($seasonMetadata, 'playback.hls_base_url');
 
-        $hlsUrl = $this->resolvePlayableHlsUrl($episode, $seriesHlsBase, $seasonHlsBase);
-        abort_unless(filled($hlsUrl), 404, 'Episode playback is not available.');
+        $sourceMethod = (string) ($episode->source_method ?? 'hls');
+        $playback = $this->resolveEpisodePlayback(
+            $episode,
+            $sourceMethod,
+            $seriesHlsBase,
+            $seasonHlsBase,
+        );
+        abort_unless(
+            filled($playback['hls_url']) || filled($playback['video_url']) || filled($playback['embed_url']),
+            404,
+            'Episode playback is not available.',
+        );
 
         [$nextEpisode, $prevEpisode] = $this->resolveAdjacentEpisodes(
             $series,
@@ -51,7 +61,10 @@ class WatchEpisodeQuery
         );
 
         return [
-            'hls_url' => $hlsUrl,
+            'hls_url' => $playback['hls_url'],
+            'video_url' => $playback['video_url'],
+            'embed_url' => $playback['embed_url'],
+            'source_method' => $sourceMethod,
             'dash_url' => filled($episode->dash_url) && (bool) ($episode->dash_verified ?? false)
                 ? (string) $episode->dash_url
                 : null,
@@ -70,6 +83,44 @@ class WatchEpisodeQuery
             ],
             'next_episode' => $nextEpisode,
             'prev_episode' => $prevEpisode,
+        ];
+    }
+
+    /**
+     * @return array{hls_url: ?string, video_url: ?string, embed_url: ?string}
+     */
+    private function resolveEpisodePlayback(
+        SeriesEpisode $episode,
+        string $sourceMethod,
+        ?string $seriesHlsBase,
+        ?string $seasonHlsBase,
+    ): array {
+        if ($sourceMethod === 'embed') {
+            $embedUrl = $this->mediaUrlHelper->resolveManagedOrExternalUrl($episode->embed_url);
+
+            return [
+                'hls_url' => null,
+                'video_url' => null,
+                'embed_url' => filled($embedUrl) ? (string) $embedUrl : null,
+            ];
+        }
+
+        if (in_array($sourceMethod, ['url', 'upload', 'video'], true)) {
+            $videoUrl = $this->mediaUrlHelper->resolveManagedOrExternalUrl($episode->video_url);
+
+            return [
+                'hls_url' => null,
+                'video_url' => filled($videoUrl) ? (string) $videoUrl : null,
+                'embed_url' => null,
+            ];
+        }
+
+        $hlsUrl = $this->resolvePlayableHlsUrl($episode, $seriesHlsBase, $seasonHlsBase);
+
+        return [
+            'hls_url' => $hlsUrl,
+            'video_url' => null,
+            'embed_url' => null,
         ];
     }
 
@@ -109,9 +160,19 @@ class WatchEpisodeQuery
 
                 return $season->episodes
                     ->sortBy('episode_number')
-                    ->filter(fn (SeriesEpisode $episode) => filled(
-                        $this->resolvePlayableHlsUrl($episode, $seriesHlsBase, $seasonHlsBase),
-                    ));
+                    ->filter(function (SeriesEpisode $episode) use ($seriesHlsBase, $seasonHlsBase) {
+                        $sourceMethod = (string) ($episode->source_method ?? 'hls');
+                        $playback = $this->resolveEpisodePlayback(
+                            $episode,
+                            $sourceMethod,
+                            $seriesHlsBase,
+                            $seasonHlsBase,
+                        );
+
+                        return filled($playback['hls_url'])
+                            || filled($playback['video_url'])
+                            || filled($playback['embed_url']);
+                    });
             })
             ->values();
     }

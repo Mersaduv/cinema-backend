@@ -51,6 +51,9 @@ type Query {
 
   movie(slug: String! @eq): Movie @find(scopes: ["published"])
 
+  moviePreview(slug: String!, token: String!): Movie!
+    @field(resolver: "App\\GraphQL\\Queries\\MoviePreviewQuery")
+
   # Unused — catalog lists use REST. See PublicSeriesController@index.
   """
   Catalog list — cheap SeriesCard rows only (SQL + metadata).
@@ -84,6 +87,9 @@ type Query {
   """
   seriesOverview(slug: String!): SeriesOverview!
     @field(resolver: "App\\GraphQL\\Queries\\SeriesOverviewQuery")
+
+  seriesOverviewPreview(slug: String!, token: String!): SeriesOverview!
+    @field(resolver: "App\\GraphQL\\Queries\\SeriesOverviewPreviewQuery")
 
   person(slug: String! @eq): Person @find
 
@@ -143,6 +149,10 @@ type Movie {
   release_year: Int
   duration_seconds: Int
   age_rating: String
+  meta_title: String @field(resolver: "App\\GraphQL\\Types\\Movie@metaTitle")
+  meta_description: String @field(resolver: "App\\GraphQL\\Types\\Movie@metaDescription")
+  content_warnings: [String!]! @field(resolver: "App\\GraphQL\\Types\\Movie@contentWarnings")
+  quality_badges: [String!]! @field(resolver: "App\\GraphQL\\Types\\Movie@qualityBadges")
   provider_name: String
   poster_path: String @deprecated(reason: "Use poster_url")
   poster_url: String @field(resolver: "App\\GraphQL\\Types\\Movie@posterUrl")
@@ -324,6 +334,10 @@ type SeriesOverview {
   backdrop_image: ResponsiveImage
   trailer_url: String
   age_rating: String
+  meta_title: String
+  meta_description: String
+  content_warnings: [String!]!
+  quality_badges: [String!]!
   has_subtitle: Boolean!
   has_dubbed: Boolean!
   total_seasons: Int
@@ -412,7 +426,10 @@ type SeriesEpisode {
 }
 
 type EpisodeWatch {
-  hls_url: String!
+  hls_url: String
+  video_url: String
+  embed_url: String
+  source_method: String
   dash_url: String
   subtitle_url: String
   dubbed_audio_url: String

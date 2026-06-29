@@ -9,6 +9,7 @@ use App\Services\TmdbService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 use Throwable;
 
 class TmdbController extends Controller
@@ -24,13 +25,21 @@ class TmdbController extends Controller
         $validated = Validator::make($request->all(), [
             'query' => ['required', 'string', 'max:255'],
             'language' => ['nullable', 'string', 'max:12'],
+            'type' => ['nullable', Rule::in(['movie', 'tv'])],
         ])->validate();
 
+        $type = $validated['type'] ?? 'movie';
+
         try {
-            $results = $this->tmdbService->search(
-                (string) $validated['query'],
-                $validated['language'] ?? null
-            );
+            $results = $type === 'tv'
+                ? $this->tmdbService->searchTv(
+                    (string) $validated['query'],
+                    $validated['language'] ?? null,
+                )
+                : $this->tmdbService->search(
+                    (string) $validated['query'],
+                    $validated['language'] ?? null,
+                );
         } catch (Throwable $exception) {
             return response()->json([
                 'success' => false,

@@ -8,6 +8,7 @@ use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CollectionService;
 use App\Services\Cinema\ContentImageIngestionService;
 use App\Services\Cinema\ImagePresentationService;
+use App\Services\Cinema\NextPublicCacheRevalidationService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaValidation;
 use Illuminate\Http\JsonResponse;
@@ -85,7 +86,7 @@ class AdminCollectionController extends Controller
         $validated = $this->validatePayload($request);
 
         $collection = $this->collectionService->createManual($validated, $request->user());
-        $this->catalogCacheService->forgetPublicCollectionsList();
+        $this->invalidatePublicCollectionsCache();
 
         return response()->json([
             'success' => true,
@@ -101,7 +102,7 @@ class AdminCollectionController extends Controller
         $validated = $this->validatePayload($request, $collection);
 
         $collection = $this->collectionService->updateManual($collection, $validated);
-        $this->catalogCacheService->forgetPublicCollectionsList();
+        $this->invalidatePublicCollectionsCache();
 
         return response()->json([
             'success' => true,
@@ -121,7 +122,7 @@ class AdminCollectionController extends Controller
         ])->validate();
 
         $this->collectionService->syncMovies($collection, $validated['movies']);
-        $this->catalogCacheService->forgetPublicCollectionsList();
+        $this->invalidatePublicCollectionsCache();
 
         return response()->json([
             'success' => true,
@@ -135,7 +136,7 @@ class AdminCollectionController extends Controller
     public function destroy(Collection $collection): JsonResponse
     {
         $collection->delete();
-        $this->catalogCacheService->forgetPublicCollectionsList();
+        $this->invalidatePublicCollectionsCache();
 
         return response()->json([
             'success' => true,
@@ -248,5 +249,11 @@ class AdminCollectionController extends Controller
         }
 
         return $item;
+    }
+
+    private function invalidatePublicCollectionsCache(): void
+    {
+        $this->catalogCacheService->forgetPublicCollectionsList();
+        app(NextPublicCacheRevalidationService::class)->revalidateCatalog(['/collections']);
     }
 }

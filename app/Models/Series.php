@@ -55,6 +55,7 @@ class Series extends Model
         'age_rating',
         'catalog_visibility',
         'is_featured',
+        'exclude_from_slider',
         'publish_status',
         'scheduled_for',
         'published_at',
@@ -71,6 +72,7 @@ class Series extends Model
             'published_at' => 'datetime',
             'metadata' => 'array',
             'is_featured' => 'boolean',
+            'exclude_from_slider' => 'boolean',
             'has_subtitle' => 'boolean',
             'has_dubbed' => 'boolean',
         ];

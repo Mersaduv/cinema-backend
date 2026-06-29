@@ -94,10 +94,14 @@ class CatalogCacheService
         $this->forgetAllCatalogLists();
     }
 
-    public function scheduleRebuildAfterContentChange(): void
+    /**
+     * @param  array<int, string|null>  $nextPaths
+     */
+    public function scheduleRebuildAfterContentChange(array $nextPaths = []): void
     {
         $this->invalidateImmediately();
         RebuildCatalogCacheJob::dispatch(warm: true)->afterResponse();
+        app(NextPublicCacheRevalidationService::class)->revalidateCatalog($nextPaths);
     }
 
     private function forgetByPattern(string $pattern): void

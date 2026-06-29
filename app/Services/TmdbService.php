@@ -153,6 +153,55 @@ class TmdbService
             ->all();
     }
 
+    public function searchTv(string $query, ?string $language = null): array
+    {
+        $query = trim($query);
+
+        if ($query === '') {
+            throw new InvalidArgumentException('A TMDB search query is required.');
+        }
+
+        $language = $this->resolveLanguage($language);
+
+        if (preg_match('/^\d+$/', $query) === 1) {
+            $tv = $this->fetchTv((int) $query, $language, false);
+
+            return collect([$this->normalizeTvSearchResult([
+                'id' => $tv['tmdb_id'],
+                'name' => $tv['title'],
+                'original_name' => $tv['original_title'],
+                'overview' => $tv['synopsis'],
+                'first_air_date' => $tv['first_air_date'] ?? null,
+                'vote_average' => $tv['rating'],
+                'poster_path' => null,
+                'backdrop_path' => null,
+            ])])
+                ->map(function (array $item) use ($tv) {
+                    return array_replace($item, [
+                        'poster_url' => $tv['poster_url'] ?? $item['poster_url'],
+                        'backdrop_url' => $tv['backdrop_url'] ?? $item['backdrop_url'],
+                    ]);
+                })
+                ->filter(fn (array $item) => $item['tmdb_id'] !== null)
+                ->values()
+                ->all();
+        }
+
+        $response = $this->request('/search/tv', [
+            'query' => $query,
+            'language' => $language,
+            'include_adult' => 'false',
+            'page' => 1,
+        ]);
+
+        return collect($response['results'] ?? [])
+            ->map(fn (array $item) => $this->normalizeTvSearchResult($item))
+            ->filter(fn (array $item) => $item['tmdb_id'] !== null)
+            ->take(10)
+            ->values()
+            ->all();
+    }
+
     public function fetchMovie(int $tmdbId, ?string $language = null): array
     {
         if ($tmdbId <= 0) {
@@ -888,6 +937,22 @@ class TmdbService
             'rating' => isset($item['vote_average']) ? round((float) $item['vote_average'], 1) : null,
             'poster_url' => $this->buildImageUrl($item['poster_path'] ?? null, 'w500'),
             'backdrop_url' => $this->buildImageUrl($item['backdrop_path'] ?? null, 'original'),
+            'media_type' => 'movie',
+        ];
+    }
+
+    private function normalizeTvSearchResult(array $item): array
+    {
+        return [
+            'tmdb_id' => $item['id'] ?? null,
+            'title' => $item['name'] ?? null,
+            'original_title' => $item['original_name'] ?? null,
+            'synopsis' => $item['overview'] ?? null,
+            'release_year' => $this->extractReleaseYear($item['first_air_date'] ?? null),
+            'rating' => isset($item['vote_average']) ? round((float) $item['vote_average'], 1) : null,
+            'poster_url' => $this->buildImageUrl($item['poster_path'] ?? null, 'w500'),
+            'backdrop_url' => $this->buildImageUrl($item['backdrop_path'] ?? null, 'original'),
+            'media_type' => 'tv',
         ];
     }
 
@@ -1583,7 +1648,11 @@ class TmdbService
             $englishName = is_array($englishRow) ? ($englishRow['name'] ?? null) : null;
         }
 
-        return $this->resolvePersonName($person['name'] ?? null, $englishName);
+        return $this->resolvePersonName(
+            $englishName,
+            $person['name'] ?? null,
+            $person['original_name'] ?? null,
+        );
     }
 
     private function resolvePersonName(?string ...$values): string
@@ -1592,6 +1661,14 @@ class TmdbService
             $trimmed = trim((string) ($value ?? ''));
 
             if ($trimmed !== '' && !$this->containsPersianScript($trimmed)) {
+                return $trimmed;
+            }
+        }
+
+        foreach ($values as $value) {
+            $trimmed = trim((string) ($value ?? ''));
+
+            if ($trimmed !== '') {
                 return $trimmed;
             }
         }

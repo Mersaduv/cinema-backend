@@ -20,6 +20,8 @@ class CatalogFilterQuery
      */
     public function apply(Builder $query, Request $request, string $table = 'movies'): Builder
     {
+        $this->applyPublicCatalogVisibility($query, $request, $table);
+
         $search = trim((string) $request->string('search'));
         if ($search !== '') {
             $term = '%'.$search.'%';
@@ -154,6 +156,31 @@ class CatalogFilterQuery
 
         $query->whereHas('genres', function (Builder $builder) use ($genreIds): void {
             $builder->whereIn('genres.id', $genreIds);
+        });
+    }
+
+    /**
+     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     */
+    private function applyPublicCatalogVisibility(
+        Builder $query,
+        Request $request,
+        string $table,
+    ): void {
+        if (! $this->hasColumn($table, 'catalog_visibility')) {
+            return;
+        }
+
+        $search = trim((string) $request->string('search'));
+
+        $query->where(function (Builder $builder) use ($search): void {
+            $builder->whereRaw("COALESCE(catalog_visibility, 'catalog_search') <> 'hidden'");
+
+            if ($search === '') {
+                $builder->whereRaw("COALESCE(catalog_visibility, 'catalog_search') IN ('catalog_search', 'catalog')");
+            } else {
+                $builder->whereRaw("COALESCE(catalog_visibility, 'catalog_search') IN ('catalog_search', 'search')");
+            }
         });
     }
 

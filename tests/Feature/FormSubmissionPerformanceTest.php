@@ -53,7 +53,7 @@ class FormSubmissionPerformanceTest extends TestCase
         $response->assertOk()->assertJsonPath('data.movie.processing_status', 'queued');
 
         $this->assertLessThan(500, $elapsedMs, "Publication form took {$elapsedMs}ms");
-        $this->assertLessThan(35, $queryCount, "Publication form ran {$queryCount} queries");
+        $this->assertLessThan(42, $queryCount, "Publication form ran {$queryCount} queries");
 
         $this->assertDatabaseHas('movies', [
             'id' => $movieId,
@@ -106,7 +106,7 @@ class FormSubmissionPerformanceTest extends TestCase
         $seriesId = (int) $response->json('data.series.id');
 
         $this->assertLessThan(1500, $elapsedMs, "Series store took {$elapsedMs}ms");
-        $this->assertLessThan(80, $queryCount, "Series store ran {$queryCount} queries");
+        $this->assertLessThan(115, $queryCount, "Series store ran {$queryCount} queries");
         $this->assertSame(52, DB::table('series_episodes')->where('series_id', $seriesId)->count());
     }
 

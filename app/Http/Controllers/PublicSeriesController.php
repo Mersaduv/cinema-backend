@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Series;
 use App\Support\CatalogListPresentation;
 use App\Support\CatalogListResponseMapper;
+use App\Support\ContentMetadataOptions;
 use App\Models\SeriesCast;
 use App\Models\SeriesCrew;
 use App\Models\SeriesEpisode;
@@ -341,6 +342,10 @@ class PublicSeriesController extends Controller
             'backdrop_image' => $backdropImage,
             'trailer_url' => $series->trailer_url,
             'age_rating' => $series->age_rating,
+            'content_warnings' => ContentMetadataOptions::filterAllowedList(
+                data_get($metadata, 'content_warnings'),
+                ContentMetadataOptions::CONTENT_WARNINGS,
+            ),
             'genres' => $normalizedGenres,
             'has_subtitle' => $includeSeasons
                 ? $this->seriesHasPlayableEpisodeAttribute($series, 'subtitle_url')

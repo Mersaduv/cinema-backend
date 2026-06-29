@@ -4,8 +4,10 @@ namespace App\GraphQL\Types;
 
 use App\GraphQL\Support\MediaUrlHelper;
 use App\Models\Movie as MovieModel;
+use App\Models\MovieCast;
 use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\ImagePresentationService;
+use App\Support\ContentMetadataOptions;
 use App\Services\TmdbService;
 
 final class Movie
@@ -168,18 +170,9 @@ final class Movie
                     ->filter()
                     ->first(),
             'runtime_minutes' => ($runtime = data_get($metadata, 'tmdb.runtime_minutes')) !== null ? (int) $runtime : null,
-            'actors' => collect(data_get($metadata, 'tmdb.actors', []))
-                ->filter(fn ($actor) => is_array($actor))
-                ->map(fn (array $actor) => [
-                    'name' => $actor['name'] ?? null,
-                    'character' => $actor['character'] ?? null,
-                    'profile_url' => $actor['profile_url'] ?? null,
-                    'profile_image' => is_array($actor['profile_image'] ?? null)
-                        ? $actor['profile_image']
-                        : null,
-                ])
-                ->values()
-                ->all(),
+            // Cast read path: prefer normalized `movie_cast` rows; fall back to legacy metadata JSON
+            // when SyncMoviePersonCreditsJob has not completed yet (see cinema:audit-cast-consistency).
+            'actors' => $this->resolvePublicActors($movie, $metadata),
             'gallery' => collect([
                 $this->mediaUrlHelper->resolveManagedOrExternalUrl(
                     null,
@@ -232,5 +225,84 @@ final class Movie
                 'downloads' => $downloads,
             ],
         ];
+    }
+
+    public function metaTitle(MovieModel $movie): ?string
+    {
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        return data_get($metadata, 'seo.meta_title');
+    }
+
+    public function metaDescription(MovieModel $movie): ?string
+    {
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        return data_get($metadata, 'seo.meta_description');
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function contentWarnings(MovieModel $movie): array
+    {
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        return ContentMetadataOptions::filterAllowedList(
+            data_get($metadata, 'content_warnings'),
+            ContentMetadataOptions::CONTENT_WARNINGS,
+        );
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function qualityBadges(MovieModel $movie): array
+    {
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        return ContentMetadataOptions::filterAllowedList(
+            data_get($metadata, 'quality_badges'),
+            ContentMetadataOptions::QUALITY_BADGES,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     * @return list<array{name: ?string, character: ?string, profile_url: ?string, profile_image: mixed}>
+     */
+    private function resolvePublicActors(MovieModel $movie, array $metadata): array
+    {
+        $movie->loadMissing(['castMembers.person']);
+
+        if ($movie->castMembers->isNotEmpty()) {
+            return $movie->castMembers
+                ->sortBy('cast_order')
+                ->values()
+                ->map(function (MovieCast $row) {
+                    $person = $row->person;
+
+                    return [
+                        'name' => $person?->name,
+                        'character' => $row->character_name,
+                        'profile_url' => $person?->profile_url,
+                        'profile_image' => null,
+                    ];
+                })
+                ->all();
+        }
+
+        return collect(data_get($metadata, 'tmdb.actors', []))
+            ->filter(fn ($actor) => is_array($actor))
+            ->map(fn (array $actor) => [
+                'name' => $actor['name'] ?? null,
+                'character' => $actor['character'] ?? null,
+                'profile_url' => $actor['profile_url'] ?? null,
+                'profile_image' => is_array($actor['profile_image'] ?? null)
+                    ? $actor['profile_image']
+                    : null,
+            ])
+            ->values()
+            ->all();
     }
 }

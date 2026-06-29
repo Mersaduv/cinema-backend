@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Movie;
 use App\Support\CatalogListPresentation;
 use App\Support\CatalogListResponseMapper;
+use App\Support\ContentMetadataOptions;
 use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogCarouselCursor;
 use App\Services\Cinema\CatalogCarouselService;
@@ -310,6 +311,10 @@ class PublicMovieController extends Controller
             'has_subtitle' => $movie->has_subtitle,
             'subtitle_source_url' => $subtitleUrl,
             'age_rating' => $movie->age_rating,
+            'content_warnings' => ContentMetadataOptions::filterAllowedList(
+                data_get($metadata, 'content_warnings'),
+                ContentMetadataOptions::CONTENT_WARNINGS,
+            ),
             'genres' => $normalizedGenres,
             'cast_members' => $movie->cast_members ?? [],
             'cast' => $movie->relationLoaded('castMembers')

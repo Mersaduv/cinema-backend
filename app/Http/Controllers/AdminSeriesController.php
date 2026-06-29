@@ -5,10 +5,11 @@ namespace App\Http\Controllers;
 use App\Jobs\ProcessSeriesImagesJob;
 use App\Jobs\SyncSeriesPersonCreditsJob;
 use App\Models\Series;
+use App\Models\ContentChangeLog;
 use App\Services\Cinema\AdminCatalogSummaryService;
 use App\Services\Cinema\AdminReferenceOptionsService;
 use App\Services\Cinema\CatalogAdminRankingEnricher;
-use App\Services\Cinema\CatalogAdminRankingEnricher;
+use App\Services\Cinema\CatalogContentRankingSyncService;
 use App\Services\Cinema\CatalogPopularityPersistence;
 use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogListProcedureService;
@@ -18,11 +19,14 @@ use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\HlsPackageInsightService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaValidation;
+use App\Support\ContentMetadataOptions;
 use App\Models\SeriesCast;
 use App\Models\SeriesCrew;
 use App\Models\SeriesEpisode;
 use App\Models\SeriesSeason;
+use App\Services\Cinema\ContentChangeLogger;
 use App\Services\Cinema\ContentImageIngestionService;
+use App\Services\Cinema\ContentPreviewTokenService;
 use App\Services\Cinema\ContentPipelineLauncher;
 use App\Services\Cinema\ContentPipelineStatusService;
 use App\Services\Cinema\ImagePresentationService;
@@ -65,6 +69,7 @@ class AdminSeriesController extends Controller
         private readonly WatchProgressLifecycleService $watchProgressLifecycle,
         private readonly CatalogPopularityPersistence $catalogPopularityPersistence,
         private readonly CatalogAdminRankingEnricher $catalogAdminRankingEnricher,
+        private readonly CatalogContentRankingSyncService $catalogContentRankingSyncService,
     ) {
     }
 
@@ -239,6 +244,56 @@ class AdminSeriesController extends Controller
         ]);
     }
 
+    public function checkSlug(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'slug' => ['required', 'string', 'max:255'],
+            'exclude_id' => ['nullable', 'integer', 'min:1'],
+        ])->validate();
+
+        $slug = trim((string) $validated['slug']);
+        $excludeId = isset($validated['exclude_id']) ? (int) $validated['exclude_id'] : null;
+        $query = Series::query()->where('slug', $slug);
+
+        if ($excludeId) {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        $available = ! $query->exists();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'available' => $available,
+                'suggestion' => $available ? null : $this->suggestUniqueSeriesSlug($slug, $excludeId),
+            ],
+        ]);
+    }
+
+    private function suggestUniqueSeriesSlug(string $baseSlug, ?int $excludeId = null): string
+    {
+        $candidate = $baseSlug;
+        $suffix = 2;
+
+        while ($this->seriesSlugTaken($candidate, $excludeId)) {
+            $candidate = $baseSlug.'-'.$suffix;
+            $suffix++;
+        }
+
+        return $candidate;
+    }
+
+    private function seriesSlugTaken(string $slug, ?int $excludeId = null): bool
+    {
+        $query = Series::query()->where('slug', $slug);
+
+        if ($excludeId) {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        return $query->exists();
+    }
+
     public function store(Request $request): JsonResponse
     {
         $validated = $this->validateSeriesPayload($request);
@@ -302,6 +357,8 @@ class AdminSeriesController extends Controller
         $this->invalidateCatalogCache();
 
         $series->refresh();
+        $this->finalizeSeriesRanking($series);
+
         $pipelineStatus = $this->contentPipelineLauncher->launchForSeries(
             $series,
             $validated,
@@ -341,6 +398,7 @@ class AdminSeriesController extends Controller
 
     public function update(Request $request, Series $series): JsonResponse
     {
+        $previousSlug = $series->slug;
         $validated = $this->validateSeriesPayload($request, $series);
 
         if (($validated['publish_status'] ?? $series->publish_status) === 'scheduled' && blank($validated['scheduled_for'] ?? null)) {
@@ -404,7 +462,13 @@ class AdminSeriesController extends Controller
             return $series;
         });
 
-        $this->invalidateCatalogCache();
+        $this->invalidateCatalogCache(
+            filled($updated->slug) ? '/series/'.$updated->slug : null,
+            filled($previousSlug) && $previousSlug !== $updated->slug ? '/series/'.$previousSlug : null,
+        );
+
+        $updated->refresh();
+        $this->finalizeSeriesRanking($updated);
 
         $updated->refresh();
         $pipelineStatus = $this->contentPipelineLauncher->launchForSeries(
@@ -416,6 +480,14 @@ class AdminSeriesController extends Controller
         $this->publishScheduleService->syncScheduledPublishRunner($updated->fresh());
 
         $openedPipeline = in_array($pipelineStatus, ['pending', 'running'], true);
+
+        app(ContentChangeLogger::class)->log(
+            'series',
+            $updated->id,
+            'updated',
+            $request,
+            array_keys($validated),
+        );
 
         return response()->json([
             'success' => true,
@@ -529,6 +601,14 @@ class AdminSeriesController extends Controller
             'published_at' => $publishState['published_at'],
         ]);
 
+        $series->refresh();
+
+        if ($publishState['publish_status'] === 'published') {
+            $this->catalogContentRankingSyncService->syncOnPublish($series);
+        } else {
+            $this->catalogContentRankingSyncService->syncAfterAdminSave($series);
+        }
+
         $this->invalidateCatalogCache();
 
         $this->publishScheduleService->syncScheduledPublishRunner($series);
@@ -549,6 +629,81 @@ class AdminSeriesController extends Controller
         ]);
     }
 
+    public function upsertEpisode(
+        Request $request,
+        Series $series,
+        int $seasonNumber,
+        int $episodeNumber,
+    ): JsonResponse {
+        if ($seasonNumber < 1 || $episodeNumber < 1) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Season and episode numbers must be positive integers.',
+            ], 422);
+        }
+
+        if (in_array($series->pipeline_status, ['pending', 'running'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Content processing pipeline is still running. Please wait until it completes.',
+            ], 422);
+        }
+
+        $validated = $this->validateEpisodeUpsertPayload($request);
+
+        $savedEpisode = DB::transaction(function () use ($series, $seasonNumber, $episodeNumber, $validated) {
+            $season = $this->ensureSeriesSeason(
+                $series,
+                $seasonNumber,
+                is_array($validated['season'] ?? null) ? $validated['season'] : [],
+            );
+
+            $episodePayload = [
+                ...$validated,
+                'season_number' => $seasonNumber,
+                'episode_number' => $episodeNumber,
+            ];
+            unset($episodePayload['season']);
+
+            $this->syncSeasonEpisodes(
+                $series,
+                $season->fresh(),
+                $seasonNumber,
+                collect([$episodePayload]),
+            );
+
+            $this->refreshSeasonEpisodeCount($season->fresh());
+            $this->refreshSeriesEpisodeAggregateFields($series->fresh());
+
+            return SeriesEpisode::query()
+                ->where('series_id', $series->id)
+                ->where('season_number', $seasonNumber)
+                ->where('episode_number', $episodeNumber)
+                ->firstOrFail();
+        });
+
+        $this->invalidateCatalogCache();
+
+        app(ContentChangeLogger::class)->log(
+            'series',
+            $series->id,
+            'episode_updated',
+            $request,
+            ["season_{$seasonNumber}_episode_{$episodeNumber}"],
+        );
+
+        $series->refresh();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Episode saved successfully.',
+            'data' => [
+                'episode' => $this->transformEpisode($savedEpisode),
+                'series' => $this->transformSeriesListItem($series),
+            ],
+        ]);
+    }
+
     public function destroy(Series $series): JsonResponse
     {
         $title = $series->title;
@@ -564,7 +719,9 @@ class AdminSeriesController extends Controller
             $series->delete();
         });
 
-        $this->invalidateCatalogCache();
+        $this->invalidateCatalogCache(
+            filled($slug) ? '/series/'.$slug : null,
+        );
 
         return response()->json([
             'success' => true,
@@ -611,12 +768,20 @@ class AdminSeriesController extends Controller
             'age_rating' => ['nullable', 'string', 'max:50'],
             'catalog_visibility' => ['nullable', Rule::in(['catalog_search', 'catalog', 'search', 'hidden'])],
             'is_featured' => ['nullable', 'boolean'],
+            'exclude_from_slider' => ['nullable', 'boolean'],
             'publish_status' => ['nullable', Rule::in(['draft', 'scheduled', 'published'])],
             'scheduled_for' => ['nullable', 'string', 'max:32'],
             'tmdb_query' => ['nullable', 'string', 'max:255'],
             'tmdb_id' => ['nullable', 'integer', 'min:1'],
             'imdb_id' => ['nullable', 'string', 'max:32'],
             'tvdb_id' => ['nullable', 'string', 'max:32'],
+            'meta_title' => ['nullable', 'string', 'max:160'],
+            'meta_description' => ['nullable', 'string', 'max:320'],
+            'content_warnings' => ['nullable', 'array'],
+            'content_warnings.*' => [Rule::in(ContentMetadataOptions::CONTENT_WARNINGS)],
+            'quality_badges' => ['nullable', 'array'],
+            'quality_badges.*' => [Rule::in(ContentMetadataOptions::QUALITY_BADGES)],
+            'admin_notes' => ['nullable', 'string', 'max:2000'],
             'rating' => ['nullable', 'numeric', 'between:0,10'],
             'popularity' => ['nullable', 'numeric', 'min:0'],
             'vote_count' => ['nullable', 'integer', 'min:0'],
@@ -799,9 +964,29 @@ class AdminSeriesController extends Controller
         ]);
     }
 
-    private function invalidateCatalogCache(): void
+    /**
+     * @param  array<int, string|null>  $extraPaths
+     */
+    private function invalidateCatalogCache(?string ...$extraPaths): void
     {
-        $this->catalogCacheService->scheduleRebuildAfterContentChange();
+        $paths = array_values(array_filter(
+            $extraPaths,
+            fn ($path) => is_string($path) && filled($path),
+        ));
+
+        $this->catalogCacheService->scheduleRebuildAfterContentChange($paths);
+    }
+
+    private function finalizeSeriesRanking(Series $series): void
+    {
+        $this->catalogContentRankingSyncService->syncAfterAdminSave($series);
+
+        if ($series->publish_status === 'published') {
+            $this->catalogContentRankingSyncService->scheduleDeferredRankingRefresh(
+                $series,
+                includeTrendingRefresh: true,
+            );
+        }
     }
 
     /**
@@ -855,6 +1040,7 @@ class AdminSeriesController extends Controller
             'age_rating' => $this->nullableString($validated['age_rating'] ?? null),
             'catalog_visibility' => $validated['catalog_visibility'] ?? 'catalog_search',
             'is_featured' => (bool) ($validated['is_featured'] ?? false),
+            'exclude_from_slider' => (bool) ($validated['exclude_from_slider'] ?? false),
         ];
 
         if (Schema::hasColumn('series', 'drm_scheme')) {
@@ -967,6 +1153,19 @@ class AdminSeriesController extends Controller
             'playback' => [
                 'hls_base_url' => $this->nullableString($validated['hls_base_url'] ?? null),
             ],
+            'seo' => [
+                'meta_title' => $this->nullableString($validated['meta_title'] ?? null),
+                'meta_description' => $this->nullableString($validated['meta_description'] ?? null),
+            ],
+            'content_warnings' => ContentMetadataOptions::filterAllowedList(
+                $validated['content_warnings'] ?? null,
+                ContentMetadataOptions::CONTENT_WARNINGS,
+            ),
+            'quality_badges' => ContentMetadataOptions::filterAllowedList(
+                $validated['quality_badges'] ?? null,
+                ContentMetadataOptions::QUALITY_BADGES,
+            ),
+            'admin_notes' => $this->nullableString($validated['admin_notes'] ?? null),
         ];
     }
 
@@ -1237,6 +1436,7 @@ class AdminSeriesController extends Controller
             'has_subtitle' => (bool) ($series->has_subtitle ?? false),
             'has_dubbed' => (bool) ($series->has_dubbed ?? false),
             'is_featured' => $series->is_featured,
+            'exclude_from_slider' => (bool) ($series->exclude_from_slider ?? false),
             'publish_status' => $series->publish_status,
             'pipeline_status' => $series->pipeline_status ?? 'idle',
             'seasons_count' => (int) ($series->getAttribute('seasons_count') ?? 0),
@@ -1244,7 +1444,50 @@ class AdminSeriesController extends Controller
             'created_at' => $series->created_at?->toISOString(),
             'updated_at' => $series->updated_at?->toISOString(),
             'created_by' => $series->creator?->only(['id', 'name', 'email']),
+            'has_admin_notes' => filled(data_get($metadata, 'admin_notes')),
         ];
+    }
+
+    public function previewToken(Series $series, ContentPreviewTokenService $previewTokenService): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => $previewTokenService->issue($series),
+        ]);
+    }
+
+    public function history(Request $request, Series $series): JsonResponse
+    {
+        $page = max(1, (int) $request->integer('page', 1));
+        $perPage = min(max((int) $request->integer('per_page', 20), 1), 50);
+
+        $paginator = ContentChangeLog::query()
+            ->with('user:id,name,email')
+            ->where('entity_type', 'series')
+            ->where('entity_id', $series->id)
+            ->orderByDesc('created_at')
+            ->paginate($perPage, ['*'], 'page', $page);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'history' => $paginator->getCollection()->map(fn (ContentChangeLog $log) => [
+                    'id' => $log->id,
+                    'action' => $log->action,
+                    'changed_fields' => $log->changed_fields ?? [],
+                    'old_values' => $log->old_values,
+                    'new_values' => $log->new_values,
+                    'created_at' => $log->created_at?->toIso8601String(),
+                    'user' => $log->user?->only(['id', 'name', 'email']),
+                ])->values()->all(),
+                'pagination' => [
+                    'current_page' => $paginator->currentPage(),
+                    'last_page' => $paginator->lastPage(),
+                    'per_page' => $paginator->perPage(),
+                    'total' => $paginator->total(),
+                ],
+            ],
+        ]);
     }
 
     private function transformSeriesForList(Series $series, bool $includeEpisodes): array
@@ -1376,6 +1619,7 @@ class AdminSeriesController extends Controller
             'drm_license_url' => $series->drm_license_url,
             'catalog_visibility' => $series->catalog_visibility,
             'is_featured' => $series->is_featured,
+            'exclude_from_slider' => (bool) ($series->exclude_from_slider ?? false),
             'publish_status' => $series->publish_status,
             'scheduled_for' => $this->publishScheduleService->formatScheduleForApi($series->scheduled_for),
             'published_at' => $series->published_at?->toISOString(),
@@ -1435,7 +1679,15 @@ class AdminSeriesController extends Controller
                     'episode_methods' => data_get($metadata, 'wordpress.episode_methods', ['upload', 'embed', 'url', 'hls']),
                 ],
                 'images' => data_get($metadata, 'images', []),
+                'seo' => [
+                    'meta_title' => data_get($metadata, 'seo.meta_title'),
+                    'meta_description' => data_get($metadata, 'seo.meta_description'),
+                ],
+                'content_warnings' => data_get($metadata, 'content_warnings', []),
+                'quality_badges' => data_get($metadata, 'quality_badges', []),
+                'admin_notes' => data_get($metadata, 'admin_notes'),
             ],
+            'admin_notes' => data_get($metadata, 'admin_notes'),
             'created_at' => $series->created_at?->toISOString(),
             'updated_at' => $series->updated_at?->toISOString(),
             'created_by' => $series->creator?->only(['id', 'name', 'email']),
@@ -1820,6 +2072,106 @@ class AdminSeriesController extends Controller
         }
 
         return ['has_subtitle' => $hasSubtitle, 'has_dubbed' => $hasDubbed];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validateEpisodeUpsertPayload(Request $request): array
+    {
+        return Validator::make($request->all(), [
+            'title' => ['nullable', 'string', 'max:255'],
+            'synopsis' => ['nullable', 'string'],
+            'synopsis_en' => ['nullable', 'string'],
+            'air_date' => ['nullable', 'date'],
+            'duration_minutes' => ['nullable', 'integer', 'min:1', 'max:999'],
+            'still_url' => CinemaValidation::nullableImageOrUrl(),
+            'source_method' => ['nullable', Rule::in(['upload', 'embed', 'url', 'hls'])],
+            'video_url' => ['nullable', 'url', 'max:2048'],
+            'embed_url' => ['nullable', 'url', 'max:2048'],
+            'hls_url' => ['nullable', 'string', 'max:2048'],
+            'hls_verified' => ['nullable', 'boolean'],
+            'dash_url' => ['nullable', 'string', 'max:2048'],
+            'dash_verified' => ['nullable', 'boolean'],
+            'download_links' => ['nullable', 'array'],
+            'download_links.*' => ['nullable', 'string', 'max:2048'],
+            'subtitle_url' => ['nullable', 'url', 'max:2048'],
+            'dubbed_audio_url' => ['nullable', 'url', 'max:2048'],
+            'publish_status' => ['nullable', Rule::in(['draft', 'scheduled', 'published'])],
+            'season' => ['nullable', 'array'],
+            'season.hls_base_url' => ['nullable', 'string', 'max:2048'],
+            'season.name' => ['nullable', 'string', 'max:255'],
+        ])->validate();
+    }
+
+    /**
+     * @param  array<string, mixed>  $seasonContext
+     */
+    private function ensureSeriesSeason(Series $series, int $seasonNumber, array $seasonContext = []): SeriesSeason
+    {
+        $series->loadMissing(['seasons']);
+        $existing = $series->seasons->firstWhere('season_number', $seasonNumber);
+
+        $seriesHlsBase = data_get($series->metadata, 'playback.hls_base_url');
+        $seasonHlsBase = $this->nullableString($seasonContext['hls_base_url'] ?? null)
+            ?: $this->seriesHlsPathService->buildSeasonHlsBase($seriesHlsBase, $seasonNumber);
+
+        if ($existing instanceof SeriesSeason) {
+            if (filled($seasonContext['hls_base_url'] ?? null)) {
+                $metadata = is_array($existing->metadata) ? $existing->metadata : [];
+                $existing->update([
+                    'metadata' => array_replace_recursive($metadata, [
+                        'playback' => [
+                            ...(array) data_get($metadata, 'playback', []),
+                            'hls_base_url' => $seasonHlsBase,
+                        ],
+                    ]),
+                ]);
+            }
+
+            return $existing->fresh();
+        }
+
+        return $series->seasons()->create([
+            'season_number' => $seasonNumber,
+            'name' => $this->nullableString($seasonContext['name'] ?? null) ?: 'Season ' . $seasonNumber,
+            'sort_order' => $seasonNumber,
+            'metadata' => [
+                'playback' => [
+                    'hls_base_url' => $seasonHlsBase,
+                ],
+                'wordpress' => [
+                    'panel' => 'seasons_episodes',
+                ],
+            ],
+        ]);
+    }
+
+    private function refreshSeasonEpisodeCount(SeriesSeason $season): void
+    {
+        $count = $season->episodes()->count();
+        $season->update([
+            'episode_count' => $count > 0 ? $count : null,
+        ]);
+    }
+
+    private function refreshSeriesEpisodeAggregateFields(Series $series): void
+    {
+        $hasSubtitle = $series->episodes()
+            ->whereNotNull('subtitle_url')
+            ->where('subtitle_url', '!=', '')
+            ->exists();
+        $hasDubbed = $series->episodes()
+            ->whereNotNull('dubbed_audio_url')
+            ->where('dubbed_audio_url', '!=', '')
+            ->exists();
+
+        $series->update([
+            'has_subtitle' => $hasSubtitle,
+            'has_dubbed' => $hasDubbed,
+            'number_of_episodes' => $series->episodes()->count(),
+            'number_of_seasons' => $series->seasons()->count(),
+        ]);
     }
 
     private function yearFromDate(?string $date): ?int

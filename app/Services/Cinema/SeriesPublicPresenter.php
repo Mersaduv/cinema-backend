@@ -8,6 +8,7 @@ use App\Models\SeriesCast;
 use App\Models\SeriesCrew;
 use App\Models\SeriesEpisode;
 use App\Models\SeriesSeason;
+use App\Support\ContentMetadataOptions;
 use App\Services\TmdbService;
 
 /**
@@ -92,6 +93,16 @@ class SeriesPublicPresenter
             'backdrop_image' => $backdropImage,
             'trailer_url' => $series->trailer_url,
             'age_rating' => $series->age_rating,
+            'meta_title' => data_get($metadata, 'seo.meta_title'),
+            'meta_description' => data_get($metadata, 'seo.meta_description'),
+            'content_warnings' => ContentMetadataOptions::filterAllowedList(
+                data_get($metadata, 'content_warnings'),
+                ContentMetadataOptions::CONTENT_WARNINGS,
+            ),
+            'quality_badges' => ContentMetadataOptions::filterAllowedList(
+                data_get($metadata, 'quality_badges'),
+                ContentMetadataOptions::QUALITY_BADGES,
+            ),
             'has_subtitle' => $this->hasSubtitle($series),
             'has_dubbed' => $this->hasDubbed($series),
             'total_seasons' => $series->relationLoaded('seasons')

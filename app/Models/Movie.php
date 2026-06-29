@@ -36,6 +36,9 @@ class Movie extends Model
         'filter_primary_network',
         'duration_seconds',
         'provider_name',
+        'is_featured',
+        'exclude_from_slider',
+        'catalog_visibility',
         'poster_path',
         'trailer_path',
         'has_dubbed_audio',
@@ -68,6 +71,8 @@ class Movie extends Model
             'audio_tracks' => 'array',
             'has_dubbed_audio' => 'boolean',
             'has_subtitle' => 'boolean',
+            'is_featured' => 'boolean',
+            'exclude_from_slider' => 'boolean',
         ];
     }
 

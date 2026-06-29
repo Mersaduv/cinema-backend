@@ -150,6 +150,9 @@ class CatalogListResponseMapper
             'backdrop_image' => $backdropImage,
             'playback_quality' => CatalogListPresentation::playbackQualityLabel(null, $metadata),
             'rating' => $rating,
+            'is_featured' => (bool) ($row['is_featured'] ?? false),
+            'exclude_from_slider' => (bool) ($row['exclude_from_slider'] ?? false),
+            'catalog_visibility' => (string) ($row['catalog_visibility'] ?? 'catalog_search'),
             'genres' => $this->genreCatalogService->serializeGenres($genres),
             'details' => [
                 'genres' => CatalogListPresentation::posterGenreLine($genres),
@@ -314,6 +317,9 @@ class CatalogListResponseMapper
             'has_dubbed' => (bool) ($row['has_dubbed'] ?? false),
             'playback_quality' => CatalogListPresentation::playbackQualityLabel(null, $metadata),
             'rating' => $rating,
+            'is_featured' => (bool) ($row['is_featured'] ?? false),
+            'exclude_from_slider' => (bool) ($row['exclude_from_slider'] ?? false),
+            'catalog_visibility' => (string) ($row['catalog_visibility'] ?? 'catalog_search'),
             'genres' => $this->genreCatalogService->serializeGenres($genres),
             'details' => [
                 'rating' => $rating,

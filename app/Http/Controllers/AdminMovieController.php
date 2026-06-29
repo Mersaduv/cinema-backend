@@ -7,11 +7,13 @@ use App\Jobs\SyncMovieCollectionJob;
 use App\Jobs\SyncMoviePersonCreditsJob;
 use App\Jobs\ValidateHlsManifestJob;
 use App\Models\Movie;
+use App\Models\ContentChangeLog;
 use App\Models\MovieCast;
 use App\Models\MovieCrew;
 use App\Services\Cinema\AdminCatalogSummaryService;
 use App\Services\Cinema\AdminReferenceOptionsService;
 use App\Services\Cinema\CatalogAdminRankingEnricher;
+use App\Services\Cinema\CatalogContentRankingSyncService;
 use App\Services\Cinema\CatalogPopularityPersistence;
 use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CollectionService;
@@ -22,6 +24,7 @@ use App\Services\Cinema\GenreCatalogService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaSynopsisHelper;
 use App\Support\CinemaValidation;
+use App\Support\ContentMetadataOptions;
 use App\Services\Cinema\ContentImageIngestionService;
 use App\Services\Cinema\ContentPipelineLauncher;
 use App\Services\Cinema\ContentPipelineStatusService;
@@ -31,6 +34,9 @@ use App\Services\Cinema\MovieCleanupService;
 use App\Services\Cinema\MovieDraftUpdateService;
 use App\Services\Cinema\MovieIngestionService;
 use App\Services\Cinema\HlsPackageInsightService;
+use App\Services\Cinema\ContentChangeLogger;
+use App\Services\Cinema\ContentPreviewTokenService;
+use App\Services\Cinema\PublishIdempotencyService;
 use App\Services\Cinema\PublishScheduleService;
 use App\Services\TmdbService;
 use Illuminate\Http\JsonResponse;
@@ -66,6 +72,7 @@ class AdminMovieController extends Controller
         private readonly ContentPipelineStatusService $contentPipelineStatusService,
         private readonly CatalogPopularityPersistence $catalogPopularityPersistence,
         private readonly CatalogAdminRankingEnricher $catalogAdminRankingEnricher,
+        private readonly CatalogContentRankingSyncService $catalogContentRankingSyncService,
     ) {
     }
 
@@ -165,6 +172,56 @@ class AdminMovieController extends Controller
                 'languages' => $this->adminReferenceOptionsService->languages(),
             ],
         ]);
+    }
+
+    public function checkSlug(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'slug' => ['required', 'string', 'max:255'],
+            'exclude_id' => ['nullable', 'integer', 'min:1'],
+        ])->validate();
+
+        $slug = trim((string) $validated['slug']);
+        $excludeId = isset($validated['exclude_id']) ? (int) $validated['exclude_id'] : null;
+        $query = Movie::query()->where('slug', $slug);
+
+        if ($excludeId) {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        $available = ! $query->exists();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'available' => $available,
+                'suggestion' => $available ? null : $this->suggestUniqueMovieSlug($slug, $excludeId),
+            ],
+        ]);
+    }
+
+    private function suggestUniqueMovieSlug(string $baseSlug, ?int $excludeId = null): string
+    {
+        $candidate = $baseSlug;
+        $suffix = 2;
+
+        while ($this->movieSlugTaken($candidate, $excludeId)) {
+            $candidate = $baseSlug.'-'.$suffix;
+            $suffix++;
+        }
+
+        return $candidate;
+    }
+
+    private function movieSlugTaken(string $slug, ?int $excludeId = null): bool
+    {
+        $query = Movie::query()->where('slug', $slug);
+
+        if ($excludeId) {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        return $query->exists();
     }
 
     public function store(Request $request): JsonResponse
@@ -318,6 +375,7 @@ class AdminMovieController extends Controller
 
     public function updatePublicationForm(Request $request, Movie $movie): JsonResponse
     {
+        $previousSlug = $movie->slug;
         $payload = $request->all();
 
         if (isset($payload['download_links']) && is_array($payload['download_links'])) {
@@ -404,6 +462,18 @@ class AdminMovieController extends Controller
             'belongs_to_collection.backdrop_url' => CinemaValidation::nullableImageOrUrl(),
             'drm_scheme' => ['sometimes', Rule::in(['none', 'widevine', 'playready', 'fairplay'])],
             'drm_license_url' => ['sometimes', 'nullable', 'url', 'max:1024'],
+            'is_featured' => ['nullable', 'boolean'],
+            'exclude_from_slider' => ['nullable', 'boolean'],
+            'catalog_visibility' => ['nullable', Rule::in(['catalog_search', 'catalog', 'search', 'hidden'])],
+            'meta_title' => ['nullable', 'string', 'max:160'],
+            'meta_description' => ['nullable', 'string', 'max:320'],
+            'homepage_url' => ['nullable', 'url', 'max:2048'],
+            'dash_url' => ['nullable', 'string', 'max:2048'],
+            'content_warnings' => ['nullable', 'array'],
+            'content_warnings.*' => [Rule::in(ContentMetadataOptions::CONTENT_WARNINGS)],
+            'quality_badges' => ['nullable', 'array'],
+            'quality_badges.*' => [Rule::in(ContentMetadataOptions::QUALITY_BADGES)],
+            'admin_notes' => ['nullable', 'string', 'max:2000'],
         ])->validate();
 
         try {
@@ -533,14 +603,41 @@ class AdminMovieController extends Controller
             $validated['synopsis'] ?? null,
             data_get($existingMetadata, 'tmdb.synopsis_en'),
         );
+        $manualDashUrl = filled($validated['dash_url'] ?? null)
+            ? trim((string) $validated['dash_url'])
+            : null;
+        $contentWarnings = ContentMetadataOptions::filterAllowedList(
+            $validated['content_warnings'] ?? data_get($existingMetadata, 'content_warnings'),
+            ContentMetadataOptions::CONTENT_WARNINGS,
+        );
+        $qualityBadges = ContentMetadataOptions::filterAllowedList(
+            $validated['quality_badges'] ?? data_get($existingMetadata, 'quality_badges'),
+            ContentMetadataOptions::QUALITY_BADGES,
+        );
 
         $metadata = array_replace_recursive($existingMetadata, [
+            'seo' => [
+                'meta_title' => filled($validated['meta_title'] ?? null)
+                    ? trim((string) $validated['meta_title'])
+                    : data_get($existingMetadata, 'seo.meta_title'),
+                'meta_description' => filled($validated['meta_description'] ?? null)
+                    ? trim((string) $validated['meta_description'])
+                    : data_get($existingMetadata, 'seo.meta_description'),
+            ],
+            'content_warnings' => $contentWarnings,
+            'quality_badges' => $qualityBadges,
+            'admin_notes' => filled($validated['admin_notes'] ?? null)
+                ? trim((string) $validated['admin_notes'])
+                : data_get($existingMetadata, 'admin_notes'),
             'tmdb' => array_replace(
                 is_array($existingMetadata['tmdb'] ?? null) ? $existingMetadata['tmdb'] : [],
                 [
                     'query' => filled($validated['tmdb_query'] ?? null) ? trim((string) $validated['tmdb_query']) : null,
                     'tmdb_id' => $validated['tmdb_id'] ?? null,
                     'imdb_id' => filled($validated['imdb_id'] ?? null) ? trim((string) $validated['imdb_id']) : null,
+                    'homepage_url' => filled($validated['homepage_url'] ?? null)
+                        ? trim((string) $validated['homepage_url'])
+                        : data_get($existingMetadata, 'tmdb.homepage_url'),
                     'rating' => isset($validated['rating']) ? (float) $validated['rating'] : null,
                     'popularity' => isset($validated['popularity']) ? (float) $validated['popularity'] : null,
                     'vote_count' => isset($validated['vote_count']) ? (int) $validated['vote_count'] : null,
@@ -579,6 +676,10 @@ class AdminMovieController extends Controller
             ],
             'playback' => [
                 'hls_url' => $canonicalHlsUrl ?? $manualHlsUrlRaw,
+                'dash_url' => $manualDashUrl ?? data_get($existingMetadata, 'playback.dash_url'),
+                'dash_verified' => filled($manualDashUrl)
+                    ? true
+                    : (bool) data_get($existingMetadata, 'playback.dash_verified', false),
                 'downloads' => $downloadLinks,
             ],
         ]);
@@ -599,6 +700,19 @@ class AdminMovieController extends Controller
             'movies',
         );
         $metadata = $popularityApplied['metadata'];
+
+        if (isset($validated['publish_status']) && $validated['publish_status'] !== 'draft') {
+            $metadata['publish'] = array_replace(
+                is_array($metadata['publish'] ?? null) ? $metadata['publish'] : [],
+                [
+                    'pending_intent' => [
+                        'status' => $validated['publish_status'],
+                        'scheduled_for' => $validated['scheduled_for'] ?? null,
+                        'requested_at' => now()->toIso8601String(),
+                    ],
+                ],
+            );
+        }
 
         $movieUpdate = [
             'title' => $validated['title'],
@@ -640,6 +754,18 @@ class AdminMovieController extends Controller
                 'filter_primary_network' => $primaryNetworkId,
                 ...$popularityApplied['columns'],
             ];
+        }
+
+        if (Schema::hasColumn('movies', 'is_featured')) {
+            $movieUpdate['is_featured'] = (bool) ($validated['is_featured'] ?? false);
+        }
+
+        if (Schema::hasColumn('movies', 'exclude_from_slider')) {
+            $movieUpdate['exclude_from_slider'] = (bool) ($validated['exclude_from_slider'] ?? false);
+        }
+
+        if (Schema::hasColumn('movies', 'catalog_visibility')) {
+            $movieUpdate['catalog_visibility'] = $validated['catalog_visibility'] ?? 'catalog_search';
         }
 
         $movie->update($movieUpdate);
@@ -718,9 +844,26 @@ class AdminMovieController extends Controller
 
         $movie = $movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator']);
 
-        $this->invalidateAdminMoviesListCache();
+        $this->catalogContentRankingSyncService->syncAfterAdminSave($movie);
+
+        if ($movie->publish_status === 'published') {
+            $this->catalogContentRankingSyncService->scheduleDeferredRankingRefresh($movie, includeTrendingRefresh: true);
+        }
+
+        $this->invalidateAdminMoviesListCache(
+            filled($movie->slug) ? '/movies/'.$movie->slug : null,
+            filled($previousSlug) && $previousSlug !== $movie->slug ? '/movies/'.$previousSlug : null,
+        );
 
         $openedPipeline = in_array($pipelineStatus, ['pending', 'running'], true);
+
+        app(ContentChangeLogger::class)->log(
+            'movie',
+            $movie->id,
+            'updated',
+            $request,
+            array_keys($validated),
+        );
 
         return response()->json([
             'success' => true,
@@ -770,7 +913,15 @@ class AdminMovieController extends Controller
             return;
         }
 
-        SyncMoviePersonCreditsJob::dispatch($movieId, $cast, $crew, $tmdbId)->afterResponse();
+        if (app()->environment('local', 'testing')) {
+            SyncMoviePersonCreditsJob::dispatchSync($movieId, $cast, $crew, $tmdbId);
+
+            return;
+        }
+
+        SyncMoviePersonCreditsJob::dispatch($movieId, $cast, $crew, $tmdbId)
+            ->onQueue('high')
+            ->afterResponse();
     }
 
     public function checkHlsExists(Request $request): JsonResponse
@@ -935,7 +1086,9 @@ class AdminMovieController extends Controller
         $slug = $movie->slug;
 
         $this->movieCleanupService->deleteMovie($movie);
-        $this->invalidateAdminMoviesListCache();
+        $this->invalidateAdminMoviesListCache(
+            filled($slug) ? '/movies/'.$slug : null,
+        );
 
         return response()->json([
             'success' => true,
@@ -953,7 +1106,13 @@ class AdminMovieController extends Controller
         Request $request,
         Movie $movie,
         PublishScheduleService $publishScheduleService,
+        PublishIdempotencyService $idempotencyService,
+        ContentChangeLogger $changeLogger,
     ): JsonResponse {
+        if ($replay = $idempotencyService->replayIfSeen($request, 'movie:'.$movie->id)) {
+            return $replay;
+        }
+
         $validated = Validator::make($request->all(), [
             'publish_status' => ['required', Rule::in(['draft', 'scheduled', 'published'])],
             'scheduled_for' => ['nullable', 'string', 'max:32'],
@@ -998,20 +1157,56 @@ class AdminMovieController extends Controller
             ], 422);
         }
 
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+        if (isset($metadata['publish']['pending_intent'])) {
+            unset($metadata['publish']['pending_intent']);
+            if (($metadata['publish'] ?? []) === []) {
+                unset($metadata['publish']);
+            }
+        }
+
         $movie->update([
             'publish_status' => $publishState['publish_status'],
             'scheduled_for' => $publishState['scheduled_for'],
             'published_at' => $publishState['published_at'],
+            'metadata' => $metadata,
         ]);
 
         if ($publishState['publish_status'] === 'published') {
             $this->catalogCacheService->forgetPublicCollectionsList();
         }
 
+        $movie = $movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator']);
+
+        if ($publishState['publish_status'] === 'published') {
+            $this->catalogContentRankingSyncService->syncOnPublish($movie);
+        } else {
+            $this->catalogContentRankingSyncService->syncAfterAdminSave($movie);
+        }
+
         $this->invalidateAdminMoviesListCache();
         $publishScheduleService->syncScheduledPublishRunner($movie->fresh());
 
-        return response()->json([
+        $action = match ($publishState['publish_status']) {
+            'published' => 'published',
+            'scheduled' => 'updated',
+            default => 'unpublished',
+        };
+
+        $changeLogger->log(
+            'movie',
+            $movie->id,
+            $action,
+            $request,
+            ['publish_status', 'scheduled_for'],
+            null,
+            [
+                'publish_status' => $publishState['publish_status'],
+                'scheduled_for' => $publishState['scheduled_for'],
+            ],
+        );
+
+        $responseBody = [
             'success' => true,
             'message' => match ($publishState['publish_status']) {
                 'published' => 'Movie published successfully.',
@@ -1020,6 +1215,52 @@ class AdminMovieController extends Controller
             },
             'data' => [
                 'movie' => $this->transformMovie($movie->fresh(['mediaAsset.variants', 'mediaAsset.processingRuns', 'creator']), true),
+            ],
+        ];
+
+        $idempotencyService->remember($request, 'movie:'.$movie->id, $responseBody);
+
+        return response()->json($responseBody);
+    }
+
+    public function previewToken(Movie $movie, ContentPreviewTokenService $previewTokenService): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => $previewTokenService->issue($movie),
+        ]);
+    }
+
+    public function history(Request $request, Movie $movie): JsonResponse
+    {
+        $page = max(1, (int) $request->integer('page', 1));
+        $perPage = min(max((int) $request->integer('per_page', 20), 1), 50);
+
+        $paginator = ContentChangeLog::query()
+            ->with('user:id,name,email')
+            ->where('entity_type', 'movie')
+            ->where('entity_id', $movie->id)
+            ->orderByDesc('created_at')
+            ->paginate($perPage, ['*'], 'page', $page);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'history' => $paginator->getCollection()->map(fn (ContentChangeLog $log) => [
+                    'id' => $log->id,
+                    'action' => $log->action,
+                    'changed_fields' => $log->changed_fields ?? [],
+                    'old_values' => $log->old_values,
+                    'new_values' => $log->new_values,
+                    'created_at' => $log->created_at?->toIso8601String(),
+                    'user' => $log->user?->only(['id', 'name', 'email']),
+                ])->values()->all(),
+                'pagination' => [
+                    'current_page' => $paginator->currentPage(),
+                    'last_page' => $paginator->lastPage(),
+                    'per_page' => $paginator->perPage(),
+                    'total' => $paginator->total(),
+                ],
             ],
         ]);
     }
@@ -1096,6 +1337,15 @@ class AdminMovieController extends Controller
             'drm_scheme' => $movie->drm_scheme ?? 'none',
             'drm_license_url' => $movie->drm_license_url,
             'age_rating' => $movie->age_rating,
+            'is_featured' => Schema::hasColumn('movies', 'is_featured')
+                ? (bool) ($movie->is_featured ?? false)
+                : false,
+            'exclude_from_slider' => Schema::hasColumn('movies', 'exclude_from_slider')
+                ? (bool) ($movie->exclude_from_slider ?? false)
+                : false,
+            'catalog_visibility' => Schema::hasColumn('movies', 'catalog_visibility')
+                ? (string) ($movie->catalog_visibility ?? 'catalog_search')
+                : 'catalog_search',
             'cast_members' => $movie->cast_members ?? [],
             'tmdb_id' => $movie->tmdb_id,
             'cast' => $includeRuns
@@ -1170,10 +1420,20 @@ class AdminMovieController extends Controller
                 ],
                 'playback' => [
                     'hls_url' => data_get($metadata, 'playback.hls_url'),
+                    'dash_url' => data_get($metadata, 'playback.dash_url'),
                     'downloads' => data_get($metadata, 'playback.downloads', []),
                 ],
+                'seo' => [
+                    'meta_title' => data_get($metadata, 'seo.meta_title'),
+                    'meta_description' => data_get($metadata, 'seo.meta_description'),
+                ],
+                'content_warnings' => data_get($metadata, 'content_warnings', []),
+                'quality_badges' => data_get($metadata, 'quality_badges', []),
+                'admin_notes' => data_get($metadata, 'admin_notes'),
                 'images' => data_get($metadata, 'images', []),
             ],
+            'admin_notes' => data_get($metadata, 'admin_notes'),
+            'publish_completion_pending' => $this->hasPublishCompletionPending($movie, $metadata),
             'created_at' => $movie->created_at?->toISOString(),
             'updated_at' => $movie->updated_at?->toISOString(),
             'created_by' => $movie->creator?->only(['id', 'name', 'email']),
@@ -1226,9 +1486,17 @@ class AdminMovieController extends Controller
         return $data;
     }
 
-    private function invalidateAdminMoviesListCache(): void
+    /**
+     * @param  array<int, string|null>  $extraPaths
+     */
+    private function invalidateAdminMoviesListCache(?string ...$extraPaths): void
     {
-        $this->catalogCacheService->scheduleRebuildAfterContentChange();
+        $paths = array_values(array_filter(
+            $extraPaths,
+            fn ($path) => is_string($path) && filled($path),
+        ));
+
+        $this->catalogCacheService->scheduleRebuildAfterContentChange($paths);
     }
 
     private function transformMovieListItem(Movie $movie): array
@@ -1249,10 +1517,19 @@ class AdminMovieController extends Controller
             'pipeline_status' => $movie->pipeline_status ?? 'idle',
             'processing_status' => $movie->processing_status,
             'processing_error' => $movie->processing_error,
+            'has_admin_notes' => filled(data_get($metadata, 'admin_notes')),
+            'publish_completion_pending' => $this->hasPublishCompletionPending($movie, $metadata),
             'created_at' => $movie->created_at?->toISOString(),
             'updated_at' => $movie->updated_at?->toISOString(),
             'created_by' => $movie->creator?->only(['id', 'name', 'email']),
         ];
+    }
+
+    private function hasPublishCompletionPending(Movie $movie, array $metadata): bool
+    {
+        return $movie->publish_status === 'draft'
+            && $movie->processing_status === 'ready'
+            && filled(data_get($metadata, 'publish.pending_intent.status'));
     }
 
     private function resolveManagedOrExternalUrl(?string $path, ?string $externalUrl = null): ?string

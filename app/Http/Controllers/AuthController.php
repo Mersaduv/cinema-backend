@@ -46,7 +46,7 @@ class AuthController extends Controller
             'success' => true,
             'message' => 'User registered successfully',
             'data' => [
-                'user' => $user->load('roles'),
+                'user' => $user->load('roles.permissions'),
                 'token' => $token,
             ],
         ], 201);
@@ -121,10 +121,18 @@ class AuthController extends Controller
 
     public function me(Request $request)
     {
+        $user = $request->user();
+
+        if ($request->boolean('include_permissions')) {
+            $user->load('roles.permissions');
+        } else {
+            $user->load('roles');
+        }
+
         return response()->json([
             'success' => true,
             'data' => [
-                'user' => $request->user()->load('roles.permissions'),
+                'user' => $user,
             ],
         ]);
     }
