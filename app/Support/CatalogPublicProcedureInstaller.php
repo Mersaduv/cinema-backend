@@ -133,6 +133,7 @@ class CatalogPublicProcedureInstaller
                             WHERE mg.movie_id = m.id AND FIND_IN_SET(CAST(mg.genre_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci, p_genre_ids COLLATE utf8mb4_unicode_ci) > 0
                         )
                     )
+                    AND (p_sort <> 'featured' OR m.is_featured = 1)
                 ORDER BY
                     {$movieTrendingFresh}
                     {$movieTrendingFallback}
@@ -173,7 +174,8 @@ class CatalogPublicProcedureInstaller
                             SELECT 1 FROM movie_genre mg
                             WHERE mg.movie_id = m.id AND FIND_IN_SET(CAST(mg.genre_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci, p_genre_ids COLLATE utf8mb4_unicode_ci) > 0
                         )
-                    );
+                    )
+                    AND (p_sort <> 'featured' OR m.is_featured = 1);
             END
         ");
 
@@ -244,6 +246,7 @@ class CatalogPublicProcedureInstaller
                             WHERE sg.series_id = s.id AND FIND_IN_SET(CAST(sg.genre_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci, p_genre_ids COLLATE utf8mb4_unicode_ci) > 0
                         )
                     )
+                    AND (p_sort <> 'featured' OR s.is_featured = 1)
                 ORDER BY
                     {$seriesTrendingFresh}
                     {$seriesTrendingFallback}
@@ -284,7 +287,8 @@ class CatalogPublicProcedureInstaller
                             SELECT 1 FROM series_genre sg
                             WHERE sg.series_id = s.id AND FIND_IN_SET(CAST(sg.genre_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci, p_genre_ids COLLATE utf8mb4_unicode_ci) > 0
                         )
-                    );
+                    )
+                    AND (p_sort <> 'featured' OR s.is_featured = 1);
             END
         ");
     }

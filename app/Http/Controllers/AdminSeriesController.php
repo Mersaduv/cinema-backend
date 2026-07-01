@@ -12,6 +12,7 @@ use App\Services\Cinema\CatalogAdminRankingEnricher;
 use App\Services\Cinema\CatalogContentRankingSyncService;
 use App\Services\Cinema\CatalogPopularityPersistence;
 use App\Services\Cinema\CatalogCacheService;
+use App\Services\Cinema\CatalogFilterQuery;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\GenreAlignmentService;
@@ -61,6 +62,7 @@ class AdminSeriesController extends Controller
         private readonly CatalogListProcedureService $catalogListProcedureService,
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
+        private readonly CatalogFilterQuery $catalogFilterQuery,
         private readonly ContentImageIngestionService $contentImageIngestionService,
         private readonly ImagePresentationService $imagePresentationService,
         private readonly ContentPipelineLauncher $contentPipelineLauncher,
@@ -75,13 +77,14 @@ class AdminSeriesController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $page = max(1, (int) $request->integer('page', 1));
         $search = trim((string) $request->string('search'));
         $publishStatus = (string) $request->string('publish_status');
         $status = (string) $request->string('status');
         $perPage = min(max((int) $request->integer('per_page', 12), 1), 50);
         $includeSeasons = $request->boolean('include_seasons');
         $includeEpisodes = $request->boolean('include_episodes');
+        $visibility = (string) $request->string('catalog_visibility');
+        $slider = (string) $request->string('slider');
 
         if ($includeSeasons) {
             return $this->indexWithSeasons(
@@ -94,56 +97,50 @@ class AdminSeriesController extends Controller
             );
         }
 
-        $searchParam = $search !== '' ? $search : null;
-        $publishFilter = in_array($publishStatus, ['draft', 'scheduled', 'published'], true)
-            ? $publishStatus
-            : null;
-        $statusFilter = $status !== '' ? $status : null;
+        $query = Series::query()
+            ->with(['creator'])
+            ->withCount(['seasons', 'episodes']);
+        $this->catalogFilterQuery->apply($query, $request, 'series', false);
 
-        $cacheKey = $this->catalogCacheService->listCacheKey(
-            'admin_series_list',
-            md5(serialize([
-                $page,
-                $perPage,
-                $searchParam,
-                $publishFilter,
-                $statusFilter,
-            ])),
-        );
+        if (in_array($publishStatus, ['draft', 'scheduled', 'published'], true)) {
+            $query->where('publish_status', $publishStatus);
+        }
 
-        $data = Cache::remember($cacheKey, 60, function () use (
-            $searchParam,
-            $publishFilter,
-            $statusFilter,
-            $page,
-            $perPage,
-        ): array {
-            $result = $this->catalogListProcedureService->adminSeriesList(
-                $searchParam,
-                $publishFilter,
-                $statusFilter,
-                $page,
-                $perPage,
-            );
+        if ($status !== '') {
+            $query->where('status', $status);
+        }
 
-            $series = array_map(
-                fn (array $row) => $this->catalogListResponseMapper->adminSeriesListItem($row),
-                $this->catalogAdminRankingEnricher->enrich($result['rows'], Series::class),
-            );
+        if (in_array($visibility, ['catalog_search', 'catalog', 'search', 'hidden'], true)) {
+            $query->where('catalog_visibility', $visibility);
+        }
 
-            $lastPage = max(1, (int) ceil($result['total'] / $perPage));
+        if ($slider === 'homepage') {
+            $query->where('is_featured', true)->where(function ($builder) {
+                $builder->whereNull('exclude_from_slider')->orWhere('exclude_from_slider', false);
+            });
+        } elseif ($slider === 'excluded') {
+            $query->where('exclude_from_slider', true);
+        } elseif ($slider === 'not_featured') {
+            $query->where(function ($builder) {
+                $builder->whereNull('is_featured')->orWhere('is_featured', false);
+            });
+        }
 
-            return [
-                'series' => $series,
-                'summary' => $result['summary'],
-                'pagination' => [
-                    'current_page' => $page,
-                    'last_page' => $lastPage,
-                    'per_page' => $perPage,
-                    'total' => $result['total'],
-                ],
-            ];
-        });
+        $series = $query->paginate($perPage);
+
+        $data = [
+            'series' => collect($series->items())
+                ->map(fn (Series $item) => $this->transformSeriesListItem($item))
+                ->values()
+                ->all(),
+            'summary' => $this->adminCatalogSummaryService->seriesSummary(),
+            'pagination' => [
+                'current_page' => $series->currentPage(),
+                'last_page' => $series->lastPage(),
+                'per_page' => $series->perPage(),
+                'total' => $series->total(),
+            ],
+        ];
 
         return response()
             ->json(['success' => true, 'data' => $data])
@@ -1040,7 +1037,9 @@ class AdminSeriesController extends Controller
             'age_rating' => $this->nullableString($validated['age_rating'] ?? null),
             'catalog_visibility' => $validated['catalog_visibility'] ?? 'catalog_search',
             'is_featured' => (bool) ($validated['is_featured'] ?? false),
-            'exclude_from_slider' => (bool) ($validated['exclude_from_slider'] ?? false),
+            'exclude_from_slider' => array_key_exists('exclude_from_slider', $validated)
+                ? (bool) $validated['exclude_from_slider']
+                : ! (bool) ($validated['is_featured'] ?? false),
         ];
 
         if (Schema::hasColumn('series', 'drm_scheme')) {

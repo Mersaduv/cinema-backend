@@ -75,7 +75,14 @@ class NextPublicCacheRevalidationService
         $url = env('NEXT_REVALIDATION_URL');
         $secret = env('NEXT_REVALIDATION_SECRET');
 
-        if (! filled($url) || ! filled($secret)) {
+        if (! filled($url)) {
+            $frontend = env('FRONTEND_URL', env('APP_FRONTEND_URL', 'http://localhost:3000'));
+            $url = rtrim((string) $frontend, '/');
+        }
+
+        if (! filled($secret)) {
+            Log::debug('Next.js cache revalidation skipped: NEXT_REVALIDATION_SECRET is not set.');
+
             return;
         }
 

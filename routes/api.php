@@ -22,9 +22,8 @@ use App\Http\Controllers\PublicReviewController;
 use App\Http\Controllers\PublicSeriesController;
 use App\Http\Controllers\TmdbController;
 use App\Http\Controllers\TvActivationController;
-use App\Http\Controllers\Admin\QoeDashboardController;
+use App\Http\Controllers\Admin\AdminDashboardController;
 use App\Http\Controllers\PlaybackSessionController;
-use App\Http\Controllers\QoeTelemetryController;
 use App\Http\Controllers\WatchProgressController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -70,8 +69,6 @@ Route::get('/persons/{slug}', [PersonController::class, 'show']);
 Route::get('/v1/playback/session', [PlaybackSessionController::class, 'show']);
 Route::get('/v1/playback/verify-token', [PlaybackSessionController::class, 'verifyToken']);
 
-Route::middleware('throttle:60,1')->post('/v1/qoe', [QoeTelemetryController::class, 'receive']);
-
 Route::prefix('v1/tv/activate')->group(function () {
     Route::post('/request', [TvActivationController::class, 'request'])->middleware('throttle:10,1');
     Route::get('/poll', [TvActivationController::class, 'poll'])->middleware('throttle:60,1');
@@ -116,6 +113,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // Admin routes
 Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(function () {
+    Route::get('/dashboard/summary', [AdminDashboardController::class, 'summary']);
+
     Route::get('/users', [AdminUserController::class, 'index']);
     Route::get('/users/options', [AdminUserController::class, 'options']);
     Route::post('/users', [AdminUserController::class, 'store']);
@@ -187,7 +186,5 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::get('/tickets', [AdminTicketController::class, 'index']);
     Route::get('/tickets/{supportTicket}', [AdminTicketController::class, 'show']);
     Route::match(['put', 'patch'], '/tickets/{supportTicket}', [AdminTicketController::class, 'update']);
-
-    Route::get('/qoe/summary', [QoeDashboardController::class, 'summary']);
 
 });

@@ -190,6 +190,19 @@ class SeriesHlsPathService
         }
 
         if (filled($seriesBase)) {
+            $normalizedSeriesBase = $this->normalizeHlsBaseUrl($seriesBase);
+
+            if (filled($normalizedSeriesBase)) {
+                $flatFromSeries = $this->buildEpisodeHlsUrl($normalizedSeriesBase, $episodeNumber);
+
+                if (filled($flatFromSeries)) {
+                    return [
+                        'hls_url' => $flatFromSeries,
+                        'source' => 'series',
+                    ];
+                }
+            }
+
             $fromSeries = $this->buildEpisodeHlsUrlFromSeries($seriesBase, $seasonNumber, $episodeNumber);
 
             if (filled($fromSeries)) {

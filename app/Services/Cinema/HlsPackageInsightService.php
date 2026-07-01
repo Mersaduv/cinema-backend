@@ -542,7 +542,7 @@ class HlsPackageInsightService
 
     /**
      * @param  array<int, array{season: int, episode: int}>  $episodes
-     * @return array<string, true>  Keys like "s01e01", "s01e02"
+     * @return array<string, array{exists: bool, hls_url: ?string}>  Keys like "s01e01"
      */
     public function checkEpisodesExistParallel(string $baseUrl, array $episodes): array
     {
@@ -554,24 +554,42 @@ class HlsPackageInsightService
     }
 
     /**
+     * @return array<int, string>
+     */
+    private function episodeHlsPathCandidates(string $baseUrl, int $season, int $episode): array
+    {
+        $base = rtrim($baseUrl, '/');
+        $candidates = [
+            sprintf('%s/episode-%02d/master.m3u8', $base, $episode),
+            sprintf('%s/season-%02d/episode-%02d/master.m3u8', $base, $season, $episode),
+        ];
+
+        return array_values(array_unique($candidates));
+    }
+
+    /**
      * @param  array<int, array{season: int, episode: int}>  $episodes
-     * @return array<string, true>
+     * @return array<string, array{exists: bool, hls_url: ?string}>
      */
     private function checkRemoteEpisodesParallel(string $baseUrl, array $episodes): array
     {
         $existing = [];
         $baseUrl = rtrim($baseUrl, '/');
+        $requestPlan = [];
 
-        $responses = Http::pool(function ($pool) use ($baseUrl, $episodes) {
-            foreach ($episodes as $i => $ep) {
-                $url = sprintf(
-                    '%s/season-%02d/episode-%02d/master.m3u8',
-                    $baseUrl,
-                    $ep['season'],
-                    $ep['episode'],
-                );
+        foreach ($episodes as $epIndex => $ep) {
+            foreach ($this->episodeHlsPathCandidates($baseUrl, $ep['season'], $ep['episode']) as $candidateIndex => $url) {
+                $requestPlan[] = [
+                    'key' => sprintf('s%02de%02d', $ep['season'], $ep['episode']),
+                    'pool_key' => "ep{$epIndex}c{$candidateIndex}",
+                    'url' => $url,
+                ];
+            }
+        }
 
-                $pool->as("ep{$i}")
+        $responses = Http::pool(function ($pool) use ($requestPlan) {
+            foreach ($requestPlan as $request) {
+                $pool->as($request['pool_key'])
                     ->connectTimeout(2)
                     ->timeout(5)
                     ->withOptions([
@@ -581,20 +599,36 @@ class HlsPackageInsightService
                     ->withHeaders([
                         'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     ])
-                    ->head($url);
+                    ->head($request['url']);
             }
         });
 
-        foreach ($episodes as $i => $ep) {
-            $key = sprintf('s%02de%02d', $ep['season'], $ep['episode']);
-            $response = $responses["ep{$i}"] ?? null;
+        foreach ($requestPlan as $request) {
+            $key = $request['key'];
+
+            if (($existing[$key]['exists'] ?? false) === true) {
+                continue;
+            }
+
+            $response = $responses[$request['pool_key']] ?? null;
 
             if (
                 $response instanceof \Illuminate\Http\Client\Response
                 && $response->successful()
             ) {
-                $existing[$key] = true;
+                $existing[$key] = [
+                    'exists' => true,
+                    'hls_url' => $request['url'],
+                ];
             }
+        }
+
+        foreach ($episodes as $ep) {
+            $key = sprintf('s%02de%02d', $ep['season'], $ep['episode']);
+            $existing[$key] ??= [
+                'exists' => false,
+                'hls_url' => null,
+            ];
         }
 
         return $existing;
@@ -602,24 +636,45 @@ class HlsPackageInsightService
 
     /**
      * @param  array<int, array{season: int, episode: int}>  $episodes
-     * @return array<string, true>
+     * @return array<string, array{exists: bool, hls_url: ?string}>
+     */
+    /**
+     * @return array<int, string>
+     */
+    private function localEpisodeHlsPathCandidates(string $basePath, int $season, int $episode): array
+    {
+        $sep = DIRECTORY_SEPARATOR;
+        $basePath = rtrim($basePath, '/\\');
+
+        return [
+            $basePath . $sep . sprintf('episode-%02d%smaster.m3u8', $episode, $sep),
+            $basePath . $sep . sprintf('season-%02d%sepisode-%02d%smaster.m3u8', $season, $sep, $episode, $sep),
+        ];
+    }
+
+    /**
+     * @param  array<int, array{season: int, episode: int}>  $episodes
+     * @return array<string, array{exists: bool, hls_url: ?string}>
      */
     private function checkLocalEpisodes(string $basePath, array $episodes): array
     {
         $existing = [];
-        $basePath = rtrim($basePath, '/\\');
-        $sep = DIRECTORY_SEPARATOR;
 
         foreach ($episodes as $ep) {
-            $path = sprintf(
-                '%s%sseason-%02d%sepisode-%02d%smaster.m3u8',
-                $basePath, $sep, $ep['season'], $sep, $ep['episode'], $sep,
-            );
+            $key = sprintf('s%02de%02d', $ep['season'], $ep['episode']);
+            $resolvedUrl = null;
 
-            if (file_exists($path)) {
-                $key = sprintf('s%02de%02d', $ep['season'], $ep['episode']);
-                $existing[$key] = true;
+            foreach ($this->localEpisodeHlsPathCandidates($basePath, $ep['season'], $ep['episode']) as $localPath) {
+                if (file_exists($localPath)) {
+                    $resolvedUrl = str_replace(DIRECTORY_SEPARATOR, '/', $localPath);
+                    break;
+                }
             }
+
+            $existing[$key] = [
+                'exists' => $resolvedUrl !== null,
+                'hls_url' => $resolvedUrl,
+            ];
         }
 
         return $existing;

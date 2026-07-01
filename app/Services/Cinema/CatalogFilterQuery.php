@@ -18,9 +18,16 @@ class CatalogFilterQuery
     /**
      * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
      */
-    public function apply(Builder $query, Request $request, string $table = 'movies'): Builder
+    public function apply(
+        Builder $query,
+        Request $request,
+        string $table = 'movies',
+        bool $respectPublicVisibility = true,
+    ): Builder
     {
-        $this->applyPublicCatalogVisibility($query, $request, $table);
+        if ($respectPublicVisibility) {
+            $this->applyPublicCatalogVisibility($query, $request, $table);
+        }
 
         $search = trim((string) $request->string('search'));
         if ($search !== '') {
@@ -100,7 +107,12 @@ class CatalogFilterQuery
             $this->applyMinRatingFilter($query, (float) $minRating, $table);
         }
 
-        return $this->applySort($query, (string) $request->string('sort'), $table);
+        $sort = strtolower(trim((string) $request->string('sort')));
+        if ($sort === 'featured' && $this->hasColumn($table, 'is_featured')) {
+            $query->where($table.'.is_featured', true);
+        }
+
+        return $this->applySort($query, $sort, $table);
     }
 
     /**
@@ -375,6 +387,7 @@ class CatalogFilterQuery
             'trending' => $this->applyTrendingSort($query, $table, $staleHours),
             'trending_fallback' => $this->applyTrendingFallbackSort($query, $table),
             'top_rated', 'imdb_desc' => $this->applyTopRatedSort($query, $table, $minVotes),
+            'featured' => $query->orderByDesc('published_at')->orderByDesc('id'),
             default => $query->orderByDesc('published_at')->orderByDesc('id'),
         };
     }

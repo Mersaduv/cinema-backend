@@ -16,6 +16,7 @@ use App\Services\Cinema\CatalogAdminRankingEnricher;
 use App\Services\Cinema\CatalogContentRankingSyncService;
 use App\Services\Cinema\CatalogPopularityPersistence;
 use App\Services\Cinema\CatalogCacheService;
+use App\Services\Cinema\CatalogFilterQuery;
 use App\Services\Cinema\CollectionService;
 use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\CatalogListProcedureService;
@@ -64,6 +65,7 @@ class AdminMovieController extends Controller
         private readonly CatalogListProcedureService $catalogListProcedureService,
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
+        private readonly CatalogFilterQuery $catalogFilterQuery,
         private readonly CollectionService $collectionService,
         private readonly CinemaSynopsisHelper $synopsisHelper,
         private readonly ContentImageIngestionService $contentImageIngestionService,
@@ -78,64 +80,49 @@ class AdminMovieController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $page = max(1, (int) $request->integer('page', 1));
-        $search = trim((string) $request->string('search'));
-        $publishStatus = (string) $request->string('publish_status');
-        $processingStatus = (string) $request->string('processing_status');
         $perPage = min(max((int) $request->integer('per_page', 12), 1), 50);
+        $publishStatus = (string) $request->string('publish_status');
+        $visibility = (string) $request->string('catalog_visibility');
+        $slider = (string) $request->string('slider');
 
-        $searchParam = $search !== '' ? $search : null;
-        $publishFilter = in_array($publishStatus, ['draft', 'scheduled', 'published'], true)
-            ? $publishStatus
-            : null;
-        $processingFilter = in_array($processingStatus, ['pending', 'queued', 'processing', 'ready', 'failed'], true)
-            ? $processingStatus
-            : null;
+        $query = Movie::query()->with(['creator']);
+        $this->catalogFilterQuery->apply($query, $request, 'movies', false);
 
-        $cacheKey = $this->catalogCacheService->listCacheKey(
-            'admin_movies_list',
-            md5(serialize([
-                $page,
-                $perPage,
-                $searchParam,
-                $publishFilter,
-                $processingFilter,
-            ])),
-        );
+        if (in_array($publishStatus, ['draft', 'scheduled', 'published'], true)) {
+            $query->where('publish_status', $publishStatus);
+        }
 
-        $data = Cache::remember($cacheKey, 60, function () use (
-            $searchParam,
-            $publishFilter,
-            $processingFilter,
-            $page,
-            $perPage,
-        ): array {
-            $result = $this->catalogListProcedureService->adminMoviesList(
-                $searchParam,
-                $publishFilter,
-                $processingFilter,
-                $page,
-                $perPage,
-            );
+        if (in_array($visibility, ['catalog_search', 'catalog', 'search', 'hidden'], true)) {
+            $query->where('catalog_visibility', $visibility);
+        }
 
-            $movies = array_map(
-                fn (array $row) => $this->catalogListResponseMapper->adminMovieListItem($row),
-                $this->catalogAdminRankingEnricher->enrich($result['rows'], Movie::class),
-            );
+        if ($slider === 'homepage') {
+            $query->where('is_featured', true)->where(function ($builder) {
+                $builder->whereNull('exclude_from_slider')->orWhere('exclude_from_slider', false);
+            });
+        } elseif ($slider === 'excluded') {
+            $query->where('exclude_from_slider', true);
+        } elseif ($slider === 'not_featured') {
+            $query->where(function ($builder) {
+                $builder->whereNull('is_featured')->orWhere('is_featured', false);
+            });
+        }
 
-            $lastPage = max(1, (int) ceil($result['total'] / $perPage));
+        $movies = $query->paginate($perPage);
 
-            return [
-                'movies' => $movies,
-                'summary' => $result['summary'],
-                'pagination' => [
-                    'current_page' => $page,
-                    'last_page' => $lastPage,
-                    'per_page' => $perPage,
-                    'total' => $result['total'],
-                ],
-            ];
-        });
+        $data = [
+            'movies' => collect($movies->items())
+                ->map(fn (Movie $movie) => $this->transformMovieListItem($movie))
+                ->values()
+                ->all(),
+            'summary' => $this->adminCatalogSummaryService->movieSummary(),
+            'pagination' => [
+                'current_page' => $movies->currentPage(),
+                'last_page' => $movies->lastPage(),
+                'per_page' => $movies->perPage(),
+                'total' => $movies->total(),
+            ],
+        ];
 
         return response()
             ->json(['success' => true, 'data' => $data])
@@ -148,9 +135,9 @@ class AdminMovieController extends Controller
             'success' => true,
             'data' => [
                 'publish_statuses' => [
-                    ['value' => 'draft', 'label' => 'Draft'],
-                    ['value' => 'scheduled', 'label' => 'Scheduled'],
-                    ['value' => 'published', 'label' => 'Published'],
+                    ['value' => 'draft', 'label' => 'پیش نویس'],
+                    ['value' => 'scheduled', 'label' => 'زمان بندی شده'],
+                    ['value' => 'published', 'label' => 'منتشر شده'],
                 ],
                 'processing_statuses' => [
                     ['value' => 'pending', 'label' => 'Pending'],
@@ -166,6 +153,12 @@ class AdminMovieController extends Controller
                     'post_max_size' => ini_get('post_max_size') ?: null,
                     'max_execution_time' => ini_get('max_execution_time') ?: null,
                     'max_input_time' => ini_get('max_input_time') ?: null,
+                ],
+                'catalog_visibility' => [
+                    ['value' => 'catalog_search', 'label' => 'کاتالوگ و جستجو'],
+                    ['value' => 'catalog', 'label' => 'فقط کاتالوگ'],
+                    ['value' => 'search', 'label' => 'فقط جستجو'],
+                    ['value' => 'hidden', 'label' => 'مخفی'],
                 ],
                 'genres' => $this->adminReferenceOptionsService->genres(),
                 'countries' => $this->adminReferenceOptionsService->countries(),
@@ -757,10 +750,15 @@ class AdminMovieController extends Controller
         }
 
         if (Schema::hasColumn('movies', 'is_featured')) {
-            $movieUpdate['is_featured'] = (bool) ($validated['is_featured'] ?? false);
-        }
+            $isFeatured = (bool) ($validated['is_featured'] ?? false);
+            $movieUpdate['is_featured'] = $isFeatured;
 
-        if (Schema::hasColumn('movies', 'exclude_from_slider')) {
+            if (Schema::hasColumn('movies', 'exclude_from_slider')) {
+                $movieUpdate['exclude_from_slider'] = array_key_exists('exclude_from_slider', $validated)
+                    ? (bool) $validated['exclude_from_slider']
+                    : ! $isFeatured;
+            }
+        } elseif (Schema::hasColumn('movies', 'exclude_from_slider')) {
             $movieUpdate['exclude_from_slider'] = (bool) ($validated['exclude_from_slider'] ?? false);
         }
 
@@ -957,10 +955,13 @@ class AdminMovieController extends Controller
 
         foreach ($validated['episodes'] as $ep) {
             $key = sprintf('s%02de%02d', $ep['season'], $ep['episode']);
+            $match = $existingEpisodes[$key] ?? ['exists' => false, 'hls_url' => null];
+
             $results[] = [
                 'season' => $ep['season'],
                 'episode' => $ep['episode'],
-                'exists' => isset($existingEpisodes[$key]),
+                'exists' => (bool) ($match['exists'] ?? false),
+                'hls_url' => filled($match['hls_url'] ?? null) ? $match['hls_url'] : null,
             ];
         }
 
@@ -1517,6 +1518,15 @@ class AdminMovieController extends Controller
             'pipeline_status' => $movie->pipeline_status ?? 'idle',
             'processing_status' => $movie->processing_status,
             'processing_error' => $movie->processing_error,
+            'is_featured' => Schema::hasColumn('movies', 'is_featured')
+                ? (bool) ($movie->is_featured ?? false)
+                : false,
+            'exclude_from_slider' => Schema::hasColumn('movies', 'exclude_from_slider')
+                ? (bool) ($movie->exclude_from_slider ?? false)
+                : false,
+            'catalog_visibility' => Schema::hasColumn('movies', 'catalog_visibility')
+                ? (string) ($movie->catalog_visibility ?? 'catalog_search')
+                : 'catalog_search',
             'has_admin_notes' => filled(data_get($metadata, 'admin_notes')),
             'publish_completion_pending' => $this->hasPublishCompletionPending($movie, $metadata),
             'created_at' => $movie->created_at?->toISOString(),

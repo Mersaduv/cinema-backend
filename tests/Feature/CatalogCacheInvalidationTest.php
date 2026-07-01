@@ -8,6 +8,7 @@ use App\Models\Series;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -86,6 +87,75 @@ class CatalogCacheInvalidationTest extends TestCase
             'admin_movies_list_g2_fingerprint',
             $service->listCacheKey('admin_movies_list', 'fingerprint'),
         );
+    }
+
+    public function test_deleting_movie_triggers_next_home_cache_revalidation(): void
+    {
+        putenv('NEXT_REVALIDATION_SECRET=test-revalidation-secret');
+        putenv('NEXT_REVALIDATION_URL=http://cinema-frontend.test');
+
+        Http::fake([
+            'http://cinema-frontend.test/api/revalidate' => Http::response(['revalidated' => true], 200),
+        ]);
+
+        $admin = $this->createAdminUser();
+        Sanctum::actingAs($admin);
+
+        $createResponse = $this->postJson('/api/admin/movies', [
+            'original_title' => 'Slider Cache Movie',
+            'publish_status' => 'published',
+            'is_featured' => true,
+        ])->assertCreated();
+
+        $movieId = (int) $createResponse->json('data.movie.id');
+
+        $this->deleteJson('/api/admin/movies/'.$movieId)->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            if ($request->url() !== 'http://cinema-frontend.test/api/revalidate') {
+                return false;
+            }
+
+            $payload = $request->data();
+
+            return ($payload['tag'] ?? null) === 'home-critical'
+                || ($payload['path'] ?? null) === '/';
+        });
+    }
+
+    public function test_deleting_series_triggers_next_home_cache_revalidation(): void
+    {
+        putenv('NEXT_REVALIDATION_SECRET=test-revalidation-secret');
+        putenv('NEXT_REVALIDATION_URL=http://cinema-frontend.test');
+
+        Http::fake([
+            'http://cinema-frontend.test/api/revalidate' => Http::response(['revalidated' => true], 200),
+        ]);
+
+        $admin = $this->createAdminUser();
+        Sanctum::actingAs($admin);
+
+        $series = Series::query()->create([
+            'title' => 'Slider Cache Series',
+            'slug' => 'slider-cache-series',
+            'publish_status' => 'published',
+            'is_featured' => true,
+            'exclude_from_slider' => false,
+            'metadata' => [],
+        ]);
+
+        $this->deleteJson('/api/admin/series/'.$series->id)->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            if ($request->url() !== 'http://cinema-frontend.test/api/revalidate') {
+                return false;
+            }
+
+            $payload = $request->data();
+
+            return ($payload['tag'] ?? null) === 'home-critical'
+                || ($payload['path'] ?? null) === '/';
+        });
     }
 
     private function createAdminUser(): User
