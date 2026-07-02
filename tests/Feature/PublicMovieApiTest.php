@@ -7,7 +7,6 @@ use App\Models\Role;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -16,23 +15,16 @@ class PublicMovieApiTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        config()->set('cinema.media_root', storage_path('framework/testing-media-root'));
-    }
-
     public function test_public_movie_payload_exposes_playback_and_subtitle_urls(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('public-playback-source.mp4');
+        $sourceUrl = 'https://cdn.example.com/sources/public-playback-source.mp4';
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'original_title' => 'Public Playback Draft',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -86,7 +78,7 @@ M3U8, 200);
             ->assertJsonPath('data.movie.playback.master_playlist_url', 'https://cdn.example.com/movies/public-playback/master.m3u8')
             ->assertJsonPath('data.movie.playback.audio_tracks.0.label', 'زبان اصلی')
             ->assertJsonPath('data.movie.playback.audio_tracks.1.label', 'دوبله فارسی')
-            ->assertJsonPath('data.movie.details.genres.0', 'علمی-تخیلی')
+            ->assertJsonPath('data.movie.details.genres.0', 'علمی تخیلی')
             ->assertJsonPath('data.movie.details.actors.0.name', 'Actor One');
     }
 
@@ -102,16 +94,5 @@ M3U8, 200);
         $user->roles()->sync([$adminRole->id]);
 
         return $user;
-    }
-
-    private function createReadableMediaFile(string $name): string
-    {
-        $directory = storage_path('framework/testing-media');
-        File::ensureDirectoryExists($directory);
-
-        $path = $directory . DIRECTORY_SEPARATOR . $name;
-        File::put($path, 'fake-video-binary');
-
-        return $path;
     }
 }

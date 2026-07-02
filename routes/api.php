@@ -6,7 +6,6 @@ use App\Http\Controllers\UploadController;
 use App\Http\Controllers\AdminCollectionController;
 use App\Http\Controllers\AdminMovieController;
 use App\Http\Controllers\AdminReviewController;
-use App\Http\Controllers\AdminMediaBrowserController;
 use App\Http\Controllers\AdminPersonController;
 use App\Http\Controllers\AdminSeriesController;
 use App\Http\Controllers\AdminUserController;
@@ -118,9 +117,6 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::get('/users', [AdminUserController::class, 'index']);
     Route::get('/users/options', [AdminUserController::class, 'options']);
     Route::post('/users', [AdminUserController::class, 'store']);
-
-    Route::get('/media-browser/roots', [AdminMediaBrowserController::class, 'roots']);
-    Route::get('/media-browser/entries', [AdminMediaBrowserController::class, 'entries']);
 
     Route::get('/movies/check-slug', [AdminMovieController::class, 'checkSlug']);
     Route::get('/movies', [AdminMovieController::class, 'index']);

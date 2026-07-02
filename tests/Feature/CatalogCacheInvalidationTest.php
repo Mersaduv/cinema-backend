@@ -20,7 +20,6 @@ class CatalogCacheInvalidationTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('cinema.media_root', storage_path('framework/testing-media-root'));
         config()->set('cache.default', 'array');
     }
 

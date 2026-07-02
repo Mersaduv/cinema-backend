@@ -147,7 +147,6 @@ class AdminMovieController extends Controller
                     ['value' => 'failed', 'label' => 'Failed'],
                 ],
                 'hls_profiles' => [],
-                'media_root' => $this->mediaPathService->mediaRoot(),
                 'upload_limits' => [
                     'upload_max_filesize' => ini_get('upload_max_filesize') ?: null,
                     'post_max_size' => ini_get('post_max_size') ?: null,
@@ -469,24 +468,6 @@ class AdminMovieController extends Controller
             'admin_notes' => ['nullable', 'string', 'max:2000'],
         ])->validate();
 
-        try {
-            $storageSlug = $movie->slug ?: $validated['slug'];
-            $posterPath = filled($validated['poster_path'] ?? null)
-                ? $this->mediaPathService->storeMoviePoster((string) $validated['poster_path'], $storageSlug)
-                : $movie->poster_path;
-            $trailerPath = filled($validated['trailer_path'] ?? null)
-                ? $this->mediaPathService->storeMovieTrailer((string) $validated['trailer_path'], $storageSlug)
-                : $movie->trailer_path;
-        } catch (InvalidArgumentException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => $exception->getMessage(),
-                'errors' => [
-                    'media' => [$exception->getMessage()],
-                ],
-            ], 422);
-        }
-
         $subtitleSourcePath = filled($validated['subtitle_source_path'] ?? null)
             ? trim((string) $validated['subtitle_source_path'])
             : null;
@@ -715,8 +696,10 @@ class AdminMovieController extends Controller
                 ? trim((string) $validated['provider_name'])
                 : null,
             'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
-            'poster_path' => $posterPath,
-            'trailer_path' => $trailerPath,
+            'poster_path' => $imageResult['poster_path'] ?? $movie->poster_path,
+            'trailer_path' => filled($validated['trailer_path'] ?? null)
+                ? trim((string) $validated['trailer_path'])
+                : $movie->trailer_path,
             'synopsis' => $synopsisFields['synopsis'],
             'age_rating' => $validated['age_rating'] ?? null,
             'release_year' => $validated['release_year'] ?? null,
@@ -1385,7 +1368,6 @@ class AdminMovieController extends Controller
             'scheduled_for' => app(PublishScheduleService::class)->formatScheduleForApi($movie->scheduled_for),
             'published_at' => $movie->published_at?->toISOString(),
             'media_folder' => $movie->media_folder,
-            'media_folder_absolute' => $this->mediaPathService->toAbsolutePath($movie->media_folder),
             'metadata' => [
                 'tmdb' => [
                     'query' => data_get($metadata, 'tmdb.query'),
@@ -1445,7 +1427,6 @@ class AdminMovieController extends Controller
                 'source_is_external' => $mediaAsset->source_is_external,
                 'managed_relative_directory' => $mediaAsset->managed_relative_directory,
                 'hls_output_relative_directory' => $mediaAsset->hls_output_relative_directory,
-                'hls_output_absolute_directory' => $this->mediaPathService->toAbsolutePath($mediaAsset->hls_output_relative_directory),
                 'master_playlist_relative_path' => $mediaAsset->master_playlist_relative_path,
                 'selected_hls_profiles' => $mediaAsset->selected_hls_profiles ?? [],
                 'master_playlist_url' => $masterPlaylistUrl,
@@ -1548,7 +1529,11 @@ class AdminMovieController extends Controller
             return $path;
         }
 
-        return $this->mediaPathService->inferPublicUrlFromAbsolutePath($path) ?: $externalUrl;
+        if ($path && str_starts_with($path, '/images/')) {
+            return $path;
+        }
+
+        return $externalUrl;
     }
 
     private function resolvePlaylistUrl(?string $playlistPath, ?string $fallbackUrl = null): ?string
@@ -1557,8 +1542,8 @@ class AdminMovieController extends Controller
             return $playlistPath;
         }
 
-        if ($playlistPath) {
-            return $this->mediaPathService->toPublicUrl($playlistPath);
+        if ($playlistPath && $this->mediaPathService->isRemoteMediaReference($playlistPath)) {
+            return $this->mediaPathService->coerceRemoteMediaUrl($playlistPath);
         }
 
         return $fallbackUrl;

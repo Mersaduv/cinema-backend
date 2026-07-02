@@ -30,7 +30,6 @@ class MovieFormFullFlowTest extends TestCase
         File::ensureDirectoryExists($this->imageRoot);
 
         config([
-            'cinema.media_root' => storage_path('framework/testing-media-root'),
             'cinema_images.storage_root' => $this->imageRoot,
             'cinema_images.public_base_url' => '',
             'cinema_images.public_prefix' => '/images',
@@ -83,13 +82,13 @@ class MovieFormFullFlowTest extends TestCase
         $admin = $this->createAdminUser();
         Sanctum::actingAs($admin);
 
-        $sourcePath = $this->createReadableMediaFile('full-flow-source.mp4');
+        $sourceUrl = 'https://cdn.example.com/sources/full-flow-source.mp4';
 
         // Step 1 — create movie shell
         $create = $this->postJson('/api/admin/movies', [
             'title' => 'Full Flow Movie',
             'original_title' => 'Full Flow Movie',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'publish_status' => 'draft',
             'start_processing' => false,
         ]);
@@ -182,16 +181,6 @@ class MovieFormFullFlowTest extends TestCase
         $user->roles()->attach($adminRole->id);
 
         return $user;
-    }
-
-    private function createReadableMediaFile(string $filename): string
-    {
-        $directory = storage_path('framework/testing-media-root/movies/test/assets');
-        File::ensureDirectoryExists($directory);
-        $path = $directory . DIRECTORY_SEPARATOR . $filename;
-        File::put($path, 'fake-video-content');
-
-        return $path;
     }
 
     private function fakeJpegBinary(): string

@@ -13,13 +13,6 @@ class CatalogCountryFilterTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        config()->set('cinema.media_root', storage_path('framework/testing-media-root'));
-    }
-
     public function test_public_movies_catalog_filters_by_united_states_iso(): void
     {
         ProductionCountry::query()->create([

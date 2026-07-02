@@ -11,7 +11,6 @@ use App\Models\Person;
 class ImagePresentationService
 {
     public function __construct(
-        private readonly MediaPathService $mediaPathService,
         private readonly ImageVariantUrlBuilder $variantUrlBuilder,
     ) {
     }
@@ -21,7 +20,7 @@ class ImagePresentationService
         return $this->resolvePreferredUrl(
             data_get($metadata, 'images.poster.original'),
             data_get($metadata, 'tmdb.poster_url'),
-            $this->mediaPathService->inferPublicUrlFromAbsolutePath($posterPath),
+            $this->resolveStoredPathUrl($posterPath),
         );
     }
 
@@ -268,5 +267,22 @@ class ImagePresentationService
     private function assetFileExists(ImageAsset $asset): bool
     {
         return filled($asset->physical_storage_path) && is_file((string) $asset->physical_storage_path);
+    }
+
+    private function resolveStoredPathUrl(?string $path): ?string
+    {
+        if (! filled($path)) {
+            return null;
+        }
+
+        if (preg_match('#^https?://#i', $path) === 1) {
+            return $path;
+        }
+
+        if (str_starts_with($path, '/images/')) {
+            return $path;
+        }
+
+        return null;
     }
 }

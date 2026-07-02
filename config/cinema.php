@@ -21,8 +21,6 @@ return [
     ))))),
     'revalidation_url' => env('CINEMA_REVALIDATION_URL'),
     'revalidation_secret' => env('CINEMA_REVALIDATION_SECRET'),
-    'media_root' => env('CINEMA_MEDIA_ROOT', 'D:\\media'),
-    'media_public_base_url' => env('CINEMA_MEDIA_PUBLIC_BASE_URL', '/media'),
     'ffmpeg_binary' => env('CINEMA_FFMPEG_BINARY', 'ffmpeg'),
     'movies_directory' => 'movies',
     'hls_directory' => 'hls',

@@ -21,7 +21,6 @@ class ContentPipelineTest extends TestCase
         parent::setUp();
 
         config([
-            'cinema.media_root' => storage_path('framework/testing-media-root'),
             'cinema_images.storage_root' => storage_path('framework/testing-image-root'),
         ]);
     }

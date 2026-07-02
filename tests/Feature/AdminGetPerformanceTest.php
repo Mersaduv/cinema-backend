@@ -18,13 +18,6 @@ class AdminGetPerformanceTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        config()->set('cinema.media_root', storage_path('framework/testing-media-root'));
-    }
-
     public function test_admin_movie_list_completes_under_threshold(): void
     {
         $admin = $this->createAdminUser();

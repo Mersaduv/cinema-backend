@@ -12,13 +12,6 @@ class PublicCatalogPerformanceTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        config()->set('cinema.media_root', storage_path('framework/testing-media-root'));
-    }
-
     public function test_public_movies_catalog_completes_under_threshold_on_cache_miss(): void
     {
         for ($index = 1; $index <= 30; $index++) {

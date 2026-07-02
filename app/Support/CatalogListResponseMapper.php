@@ -6,14 +6,12 @@ use App\Models\Genre;
 use App\Support\CatalogListPresentation;
 use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\ImagePresentationService;
-use App\Services\Cinema\MediaPathService;
 use App\Services\TmdbService;
 use Illuminate\Support\Facades\DB;
 
 class CatalogListResponseMapper
 {
     public function __construct(
-        private readonly MediaPathService $mediaPathService,
         private readonly ImagePresentationService $imagePresentationService,
         private readonly GenreCatalogService $genreCatalogService,
         private readonly TmdbService $tmdbService,
@@ -34,8 +32,7 @@ class CatalogListResponseMapper
             'slug' => (string) ($row['slug'] ?? ''),
             'synopsis' => $row['synopsis'] ?? null,
             'release_year' => isset($row['release_year']) ? (int) $row['release_year'] : null,
-            'poster_url' => $this->mediaPathService->inferPublicUrlFromAbsolutePath($row['poster_path'] ?? null)
-                ?: ($row['tmdb_poster_url'] ?? null),
+            'poster_url' => $this->resolvePosterListUrl($row['poster_path'] ?? null, $row['tmdb_poster_url'] ?? null),
             'has_dubbed_audio' => (bool) ($row['has_dubbed_audio'] ?? false),
             'has_subtitle' => (bool) ($row['has_subtitle'] ?? false),
             'publish_status' => (string) ($row['publish_status'] ?? 'draft'),
@@ -417,6 +414,19 @@ class CatalogListResponseMapper
         }
 
         return [];
+    }
+
+    private function resolvePosterListUrl(?string $posterPath, ?string $fallbackUrl): ?string
+    {
+        if ($posterPath && preg_match('#^https?://#i', $posterPath) === 1) {
+            return $posterPath;
+        }
+
+        if ($posterPath && str_starts_with($posterPath, '/images/')) {
+            return $posterPath;
+        }
+
+        return $fallbackUrl;
     }
 
     private function isoTimestamp(mixed $value): ?string

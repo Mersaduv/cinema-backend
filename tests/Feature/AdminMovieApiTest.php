@@ -7,7 +7,6 @@ use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -16,24 +15,16 @@ class AdminMovieApiTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        config()->set('cinema.media_root', storage_path('framework/testing-media-root'));
-    }
-
     public function test_admin_can_register_a_movie_with_a_media_source(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('dune-source.mp4');
-        $normalizedSourcePath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $sourcePath);
+        $sourceUrl = $this->remoteSourceUrl('dune-source.mp4');
 
         Sanctum::actingAs($admin);
 
         $response = $this->postJson('/api/admin/movies', [
             'title' => 'Dune Part Two',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'publish_status' => 'draft',
             'start_processing' => false,
         ]);
@@ -41,7 +32,7 @@ class AdminMovieApiTest extends TestCase
         $response
             ->assertCreated()
             ->assertJsonPath('data.movie.title', 'Dune Part Two')
-            ->assertJsonPath('data.movie.media_asset.source_path', $normalizedSourcePath);
+            ->assertJsonPath('data.movie.media_asset.source_path', $sourceUrl);
 
         $this->assertDatabaseHas('movies', [
             'title' => 'Dune Part Two',
@@ -50,7 +41,7 @@ class AdminMovieApiTest extends TestCase
         ]);
 
         $this->assertDatabaseHas('media_assets', [
-            'source_path' => $normalizedSourcePath,
+            'source_path' => $sourceUrl,
             'processing_status' => 'pending',
         ]);
     }
@@ -58,13 +49,13 @@ class AdminMovieApiTest extends TestCase
     public function test_admin_can_save_movie_publication_form(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('publication-source.mp4');
+        $sourceUrl = $this->remoteSourceUrl('publication-source.mp4');
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'original_title' => 'Original Draft Title',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -134,7 +125,7 @@ class AdminMovieApiTest extends TestCase
             ->assertJsonPath('data.movie.metadata.tmdb.production_status', 'Released')
             ->assertJsonPath('data.movie.metadata.tmdb.budget', 160000000)
             ->assertJsonPath('data.movie.metadata.tmdb.revenue', 555000000)
-            ->assertJsonPath('data.movie.metadata.tmdb.genres.0', 'علمی-تخیلی')
+            ->assertJsonPath('data.movie.metadata.tmdb.genres.0', 'علمی تخیلی')
             ->assertJsonPath('data.movie.metadata.tmdb.tags.0', 'mind-bending')
             ->assertJsonPath('data.movie.metadata.tmdb.languages.1', 'Japanese')
             ->assertJsonPath('data.movie.metadata.tmdb.countries.0', 'United States of America')
@@ -157,13 +148,13 @@ class AdminMovieApiTest extends TestCase
     public function test_publication_form_syncs_subtitle_and_dubbed_from_hls_manifest(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('manifest-source.mp4');
+        $sourceUrl = $this->remoteSourceUrl('manifest-source.mp4');
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'original_title' => 'Manifest Draft',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -238,6 +229,10 @@ M3U8, 200);
             'hls_url' => $hlsUrl,
             'age_rating' => 'PG-13',
         ])->assertOk();
+
+        $movie = \App\Models\Movie::query()->findOrFail($movieId);
+        $movie->update(['processing_status' => 'ready']);
+        $movie->mediaAsset()?->update(['processing_status' => 'ready']);
 
         Http::fake([
             $hlsUrl => Http::response('', 500),
@@ -327,13 +322,13 @@ M3U8, 200);
     public function test_publication_form_normalizes_hls_worker_folder_url_with_spaces(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('folder-url-source.mp4');
+        $sourceUrl = $this->remoteSourceUrl('folder-url-source.mp4');
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'original_title' => 'Folder Url Draft',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -406,13 +401,13 @@ M3U8, 200);
     public function test_queue_processing_endpoint_reports_removed_logic(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('arrival-source.mp4');
+        $sourceUrl = $this->remoteSourceUrl('arrival-source.mp4');
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'title' => 'Arrival',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'publish_status' => 'draft',
             'start_processing' => false,
         ]);
@@ -429,13 +424,13 @@ M3U8, 200);
     public function test_stop_processing_endpoint_reports_removed_logic(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('stop-source.mp4');
+        $sourceUrl = $this->remoteSourceUrl('stop-source.mp4');
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'title' => 'Stop Queue Movie',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -451,13 +446,13 @@ M3U8, 200);
     public function test_deleting_movie_removes_movie_record(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('delete-dispose-source.mp4');
+        $sourceUrl = $this->remoteSourceUrl('delete-dispose-source.mp4');
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'title' => 'Delete Dispose Movie',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -475,14 +470,14 @@ M3U8, 200);
     public function test_admin_can_update_movie_draft_form(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('draft-update-source.mp4');
-        $updatedSourcePath = $this->createReadableMediaFile('draft-update-source-2.mp4');
+        $sourceUrl = $this->remoteSourceUrl('draft-update-source.mp4');
+        $updatedSourceUrl = $this->remoteSourceUrl('draft-update-source-2.mp4');
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'original_title' => 'Draft Original',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -494,7 +489,7 @@ M3U8, 200);
             'slug' => 'draft-display-updated',
             'release_year' => 2024,
             'provider_name' => 'Cinema Provider',
-            'source_path' => $updatedSourcePath,
+            'source_path' => $updatedSourceUrl,
         ]);
 
         $response
@@ -512,13 +507,13 @@ M3U8, 200);
     public function test_ready_movie_can_be_published_by_admin(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('published-source.mp4');
+        $sourceUrl = $this->remoteSourceUrl('published-source.mp4');
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'title' => 'Published Movie',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'publish_status' => 'draft',
             'start_processing' => false,
         ]);
@@ -545,7 +540,7 @@ M3U8, 200);
         ]);
     }
 
-    public function test_admin_can_register_a_movie_with_uploaded_source_file(): void
+    public function test_admin_cannot_register_a_movie_with_uploaded_source_file(): void
     {
         $admin = $this->createAdminUser();
 
@@ -559,35 +554,23 @@ M3U8, 200);
         ]);
 
         $response
-            ->assertCreated()
-            ->assertJsonPath('data.movie.title', 'Uploaded Movie');
-
-        $storedSourcePath = $response->json('data.movie.media_asset.source_path');
-
-        $this->assertNotNull($storedSourcePath);
-        $this->assertStringContainsString('testing-media-root', $storedSourcePath);
-        $this->assertStringEndsWith('source.mp4', strtolower($storedSourcePath));
-        $this->assertFileExists($storedSourcePath);
+            ->assertStatus(422)
+            ->assertJsonPath('errors.source_file.0', 'Local source file upload is not supported. Provide an HTTP(S) source URL instead.');
     }
 
-    public function test_admin_can_browse_available_media_files(): void
+    public function test_admin_cannot_register_a_movie_with_local_disk_source_path(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('browser-test.mp4');
 
         Sanctum::actingAs($admin);
 
-        $response = $this->getJson('/api/admin/media-browser/entries?kind=video&path=' . urlencode(dirname($sourcePath)));
+        $response = $this->postJson('/api/admin/movies', [
+            'title' => 'Local Path Movie',
+            'source_path' => 'D:\\content\\movies\\local-source.mp4',
+            'publish_status' => 'draft',
+        ]);
 
-        $response
-            ->assertOk()
-            ->assertJsonPath('data.current_path', str_replace(['/', '\\'], DIRECTORY_SEPARATOR, dirname($sourcePath)))
-            ->assertJsonFragment([
-                'name' => 'browser-test.mp4',
-                'path' => str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $sourcePath),
-                'extension' => 'mp4',
-                'is_supported' => true,
-            ]);
+        $response->assertStatus(422);
     }
 
     private function createAdminUser(): User
@@ -604,14 +587,8 @@ M3U8, 200);
         return $user;
     }
 
-    private function createReadableMediaFile(string $name): string
+    private function remoteSourceUrl(string $name): string
     {
-        $directory = storage_path('framework/testing-media');
-        File::ensureDirectoryExists($directory);
-
-        $path = $directory . DIRECTORY_SEPARATOR . $name;
-        File::put($path, 'fake-video-binary');
-
-        return $path;
+        return 'https://cdn.example.com/sources/' . rawurlencode($name);
     }
 }

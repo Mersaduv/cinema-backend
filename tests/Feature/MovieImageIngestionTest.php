@@ -26,7 +26,6 @@ class MovieImageIngestionTest extends TestCase
         File::ensureDirectoryExists($this->imageRoot);
 
         config([
-            'cinema.media_root' => storage_path('framework/testing-media-root'),
             'cinema_images.storage_root' => $this->imageRoot,
             'cinema_images.public_base_url' => '',
             'cinema_images.public_prefix' => '/images',
@@ -47,11 +46,11 @@ class MovieImageIngestionTest extends TestCase
         $admin = $this->createAdminUser();
         Sanctum::actingAs($admin);
 
-        $sourcePath = $this->createReadableMediaFile('movie-image-source.mp4');
+        $sourceUrl = 'https://cdn.example.com/sources/movie-image-source.mp4';
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'original_title' => 'Image Test Movie',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -119,16 +118,6 @@ class MovieImageIngestionTest extends TestCase
         $user->roles()->attach($adminRole->id);
 
         return $user;
-    }
-
-    private function createReadableMediaFile(string $filename): string
-    {
-        $directory = storage_path('framework/testing-media-root/movies/test/assets');
-        File::ensureDirectoryExists($directory);
-        $path = $directory . DIRECTORY_SEPARATOR . $filename;
-        File::put($path, 'fake-video-content');
-
-        return $path;
     }
 
     private function fakeJpegBinary(): string

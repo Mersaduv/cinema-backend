@@ -10,14 +10,9 @@ use InvalidArgumentException;
 
 class ActorImageSyncService
 {
-    public function __construct(
-        private readonly MediaPathService $mediaPathService,
-    ) {
-    }
-
     public function syncFromImdb(Actor $actor): Actor
     {
-        if (!filled($actor->imdb_url)) {
+        if (! filled($actor->imdb_url)) {
             throw new InvalidArgumentException('برای دریافت تصویر بازیگر، لینک IMDb لازم است.');
         }
 
@@ -29,7 +24,7 @@ class ActorImageSyncService
 
         $imageUrl = $this->resolveImageUrl($actor, $imdbId);
 
-        if (!$imageUrl) {
+        if (! $imageUrl) {
             throw new InvalidArgumentException('تصویر بازیگر از IMDb پیدا نشد.');
         }
 
@@ -44,7 +39,7 @@ class ActorImageSyncService
 
     public function deleteStoredImage(Actor $actor): void
     {
-        $actorDirectory = $this->mediaPathService->actorAbsoluteDirectory($actor->slug);
+        $actorDirectory = $this->actorAbsoluteDirectory($actor->slug);
 
         if (is_dir($actorDirectory)) {
             File::deleteDirectory($actorDirectory);
@@ -56,7 +51,7 @@ class ActorImageSyncService
         $query = rawurlencode(Str::ascii($actor->slug !== '' ? str_replace('-', ' ', $actor->slug) : $actor->name));
         $firstLetter = strtolower(substr($query, 0, 1));
 
-        if ($firstLetter === '' || !ctype_alpha($firstLetter)) {
+        if ($firstLetter === '' || ! ctype_alpha($firstLetter)) {
             $firstLetter = 'a';
         }
 
@@ -68,7 +63,7 @@ class ActorImageSyncService
             "https://v2.sg.media-imdb.com/suggestion/{$firstLetter}/{$query}.json"
         );
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             throw new InvalidArgumentException('دریافت اطلاعات بازیگر از IMDb انجام نشد.');
         }
 
@@ -101,11 +96,11 @@ class ActorImageSyncService
             'Referer' => 'https://www.imdb.com/',
         ])->timeout(30)->get($imageUrl);
 
-        if (!$response->successful() || $response->body() === '') {
+        if (! $response->successful() || $response->body() === '') {
             throw new InvalidArgumentException('دانلود تصویر بازیگر از IMDb انجام نشد.');
         }
 
-        $actorDirectory = $this->mediaPathService->actorAbsoluteDirectory($actor->slug);
+        $actorDirectory = $this->actorAbsoluteDirectory($actor->slug);
         File::ensureDirectoryExists($actorDirectory);
 
         foreach (glob($actorDirectory . DIRECTORY_SEPARATOR . 'portrait.*') ?: [] as $existingFile) {
@@ -113,12 +108,22 @@ class ActorImageSyncService
         }
 
         $extension = $this->resolveImageExtension($imageUrl, (string) $response->header('Content-Type', ''));
-        $relativePath = $this->mediaPathService->actorImageRelativePath($actor->slug, $extension);
-        $absolutePath = $this->mediaPathService->toAbsolutePath($relativePath);
+        $absolutePath = $actorDirectory . DIRECTORY_SEPARATOR . 'portrait.' . $extension;
 
         File::put($absolutePath, $response->body());
 
         return $absolutePath;
+    }
+
+    private function actorAbsoluteDirectory(string $slug): string
+    {
+        $root = rtrim((string) env('CINEMA_IMAGE_STORAGE_ROOT', ''), '\\/');
+
+        if ($root === '') {
+            throw new InvalidArgumentException('CINEMA_IMAGE_STORAGE_ROOT is not configured.');
+        }
+
+        return $root . DIRECTORY_SEPARATOR . 'actors' . DIRECTORY_SEPARATOR . $slug;
     }
 
     private function extractImdbNameId(string $imdbUrl): ?string

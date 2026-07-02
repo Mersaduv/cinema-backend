@@ -139,13 +139,7 @@ class HlsPackageInsightService
             }
         }
 
-        try {
-            $this->mediaPathService->ensureReadableFile($trimmed);
-
-            return true;
-        } catch (\Throwable) {
-            return false;
-        }
+        return false;
     }
 
     /**
@@ -973,10 +967,7 @@ class HlsPackageInsightService
             return $this->httpGetRemote($trimmed);
         }
 
-        $path = $this->mediaPathService->ensureReadableFile($trimmed);
-        $contents = @file_get_contents($path);
-
-        return $contents === false ? null : $contents;
+        return null;
     }
 
     /**
@@ -1062,11 +1053,7 @@ class HlsPackageInsightService
             return $baseDirectory . '/' . ltrim(str_replace('\\', '/', $uri), '/');
         }
 
-        $basePath = $this->mediaPathService->normalizeInputPath(
-            $this->packageRootBaseUrl($hlsUrl) . DIRECTORY_SEPARATOR . $uri
-        );
-
-        return $basePath;
+        return null;
     }
 
     /**

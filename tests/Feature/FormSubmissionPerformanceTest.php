@@ -15,13 +15,6 @@ class FormSubmissionPerformanceTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        config()->set('cinema.media_root', storage_path('framework/testing-media-root'));
-    }
-
     public function test_movie_publication_form_completes_with_bounded_queries(): void
     {
         $admin = $this->createAdminUser();

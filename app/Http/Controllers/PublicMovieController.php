@@ -494,7 +494,11 @@ class PublicMovieController extends Controller
             return $path;
         }
 
-        return $this->mediaPathService->inferPublicUrlFromAbsolutePath($path) ?: $externalUrl;
+        if ($path && str_starts_with($path, '/images/')) {
+            return $path;
+        }
+
+        return $externalUrl;
     }
 
     private function resolvePlaybackUrl(Movie $movie): ?string
@@ -516,6 +520,10 @@ class PublicMovieController extends Controller
             return $playlistPath;
         }
 
-        return $this->mediaPathService->toPublicUrl($playlistPath);
+        if ($this->mediaPathService->isRemoteMediaReference($playlistPath)) {
+            return $this->mediaPathService->coerceRemoteMediaUrl($playlistPath);
+        }
+
+        return null;
     }
 }

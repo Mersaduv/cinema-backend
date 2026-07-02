@@ -16,7 +16,11 @@ final class MediaUrlHelper
             return $path;
         }
 
-        return $this->mediaPathService->inferPublicUrlFromAbsolutePath($path) ?: $externalUrl;
+        if ($path && str_starts_with($path, '/images/')) {
+            return $path;
+        }
+
+        return $externalUrl;
     }
 
     public function resolveMoviePlaybackUrl(\App\Models\Movie $movie): ?string
@@ -38,6 +42,10 @@ final class MediaUrlHelper
             return $playlistPath;
         }
 
-        return $this->mediaPathService->toPublicUrl($playlistPath);
+        if ($this->mediaPathService->isRemoteMediaReference($playlistPath)) {
+            return $this->mediaPathService->coerceRemoteMediaUrl($playlistPath);
+        }
+
+        return null;
     }
 }

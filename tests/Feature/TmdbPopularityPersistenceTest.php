@@ -7,7 +7,6 @@ use App\Models\Role;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\File;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -15,23 +14,16 @@ class TmdbPopularityPersistenceTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        config()->set('cinema.media_root', storage_path('framework/testing-media-root'));
-    }
-
     public function test_publication_form_persists_popularity_and_vote_count(): void
     {
         $admin = $this->createAdminUser();
-        $sourcePath = $this->createReadableMediaFile('popularity-source.mp4');
+        $sourceUrl = 'https://cdn.example.com/sources/popularity-source.mp4';
 
         Sanctum::actingAs($admin);
 
         $createResponse = $this->postJson('/api/admin/movies', [
             'original_title' => 'Popularity Draft',
-            'source_path' => $sourcePath,
+            'source_path' => $sourceUrl,
             'start_processing' => false,
         ]);
 
@@ -69,16 +61,5 @@ class TmdbPopularityPersistenceTest extends TestCase
         $user->roles()->sync([$adminRole->id]);
 
         return $user;
-    }
-
-    private function createReadableMediaFile(string $name): string
-    {
-        $directory = storage_path('framework/testing-media');
-        File::ensureDirectoryExists($directory);
-
-        $path = $directory.DIRECTORY_SEPARATOR.$name;
-        File::put($path, 'fake-video-binary');
-
-        return $path;
     }
 }
