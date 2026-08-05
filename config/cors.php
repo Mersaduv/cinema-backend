@@ -12,7 +12,7 @@ return [
     |
     */
 
-    'paths' => ['api/*', 'graphql', 'sanctum/csrf-cookie', '*'],
+    'paths' => ['api/*', 'graphql', 'graphql/*', 'login', 'logout', 'register', 'sanctum/csrf-cookie', 'forgot-password', 'reset-password', '*'],
 
     'allowed_methods' => ['*'],
 
@@ -24,7 +24,7 @@ return [
 
     'exposed_headers' => [],
 
-    'max_age' => 86_400,
+    'max_age' => 0,
 
     'supports_credentials' => false,
 

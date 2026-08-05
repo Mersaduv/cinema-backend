@@ -28,12 +28,12 @@ class MediaPathServiceTest extends TestCase
 
     public function test_does_not_treat_windows_paths_as_remote(): void
     {
-        $this->assertFalse($this->service->isRemoteMediaReference('D:\\content\\movies\\test\\master.m3u8'));
+        $this->assertFalse($this->service->isRemoteMediaReference('E:\\content\\movies\\test\\master.m3u8'));
     }
 
     public function test_rejects_local_disk_paths_when_asserting_remote_url(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        $this->service->assertRemoteMediaUrl('D:\\content\\movies\\test\\master.m3u8');
+        $this->service->assertRemoteMediaUrl('E:\\content\\movies\\test\\master.m3u8');
     }
 }

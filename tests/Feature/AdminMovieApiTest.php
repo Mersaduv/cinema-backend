@@ -566,7 +566,7 @@ M3U8, 200);
 
         $response = $this->postJson('/api/admin/movies', [
             'title' => 'Local Path Movie',
-            'source_path' => 'D:\\content\\movies\\local-source.mp4',
+            'source_path' => 'E:\\content\\movies\\local-source.mp4',
             'publish_status' => 'draft',
         ]);
 

@@ -3,6 +3,9 @@
 .env
 .env.backup
 .env.production
+config/database.php
+composer.lock
+
 .phpactor.json
 .phpunit.result.cache
 /.fleet
@@ -16,6 +19,7 @@
 /public/build
 /public/hot
 /public/storage
+/public/web.config
 /storage/*.key
 /storage/pail
 /vendor

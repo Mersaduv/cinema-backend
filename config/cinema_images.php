@@ -1,7 +1,7 @@
 <?php
 
 return [
-    'storage_root' => env('CINEMA_IMAGE_STORAGE_ROOT', 'D:\\content'),
+    'storage_root' => env('CINEMA_IMAGE_STORAGE_ROOT', 'E:\\content'),
 
     'public_base_url' => rtrim((string) env('CINEMA_IMAGE_PUBLIC_BASE_URL', ''), '/'),
 
