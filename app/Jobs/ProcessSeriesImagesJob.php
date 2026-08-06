@@ -42,10 +42,12 @@ class ProcessSeriesImagesJob implements ShouldQueue
         }
 
         try {
-            $contentImageIngestionService->processSeriesDeferredSecondaryImages($series);
+            $this->pipelineStart('image_primary');
+            $primary = $contentImageIngestionService->processSeriesDeferredSecondaryImages($series);
+            $this->pipelineComplete($primary, 'image_primary');
             $series->refresh();
-        } catch (\Throwable) {
-            // Non-blocking: actor/season images can still proceed.
+        } catch (\Throwable $exception) {
+            $this->pipelineFail($exception->getMessage(), 'image_primary');
         }
 
         $this->pipelineStart('image_actors');

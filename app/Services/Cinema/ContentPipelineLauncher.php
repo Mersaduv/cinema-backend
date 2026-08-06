@@ -39,19 +39,7 @@ class ContentPipelineLauncher
         ?string $subtitleSourcePath,
     ): string {
         $intendedPublishStatus = (string) ($validated['publish_status'] ?? 'draft');
-
-        if (! $this->shouldOpenForIntent($intendedPublishStatus)) {
-            $this->dispatchMovieJobsWithoutPipeline(
-                $movie->id,
-                $validated,
-                $shouldValidateHlsAsync,
-                $canonicalHlsUrl,
-                $manualHlsUrlRaw,
-                $subtitleSourcePath,
-            );
-
-            return 'idle';
-        }
+        $willPublish = $this->shouldOpenForIntent($intendedPublishStatus);
 
         $scheduledInput = $intendedPublishStatus === 'scheduled'
             ? ($validated['scheduled_for'] ?? $movie->scheduled_for)
@@ -60,14 +48,18 @@ class ContentPipelineLauncher
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
         $metadata['pipeline']['intended_publish_status'] = $intendedPublishStatus;
 
-        $movie->update([
-            'metadata' => $metadata,
-            'publish_status' => 'draft',
-            'scheduled_for' => $intendedPublishStatus === 'scheduled'
+        // Always open a pipeline so admin list shows «در حال پردازش» while jobs run.
+        $movieUpdates = ['metadata' => $metadata];
+
+        if ($willPublish) {
+            $movieUpdates['publish_status'] = 'draft';
+            $movieUpdates['published_at'] = null;
+            $movieUpdates['scheduled_for'] = $intendedPublishStatus === 'scheduled'
                 ? $this->publishScheduleService->resolvePublishState('scheduled', $scheduledInput)['scheduled_for']
-                : $movie->scheduled_for,
-            'published_at' => null,
-        ]);
+                : $movie->scheduled_for;
+        }
+
+        $movie->update($movieUpdates);
 
         $taskKeys = $this->movieTaskKeys($validated);
         $pipeline = $this->pipelineOrchestrator->open(
@@ -77,11 +69,9 @@ class ContentPipelineLauncher
             $triggeredBy,
         );
 
-        $this->pipelineOrchestrator->taskStarted($pipeline->id, 'image_primary');
-        $this->pipelineOrchestrator->taskCompleted($pipeline->id, 'image_primary', [
-            'poster' => filled(data_get($imageResult, 'metadata.images.poster')),
-            'backdrop' => filled(data_get($imageResult, 'metadata.images.backdrop')),
-        ]);
+        // Do not mark image_primary running here — ProcessMovieImagesJob calls taskStarted
+        // when the worker actually picks the job up. Premature "running" leaves UI stuck
+        // if the queue worker is down.
 
         if (! $shouldValidateHlsAsync && filled($canonicalHlsUrl)) {
             $this->pipelineOrchestrator->taskStarted($pipeline->id, 'hls_validate');
@@ -94,13 +84,21 @@ class ContentPipelineLauncher
                 $manualHlsUrlRaw,
                 $subtitleSourcePath,
                 $pipeline->id,
-            )->afterResponse();
-        } else {
+            );
+        } elseif ($willPublish) {
             $this->pipelineOrchestrator->taskStarted($pipeline->id, 'hls_validate');
-            $this->pipelineOrchestrator->taskFailed($pipeline->id, 'hls_validate', 'HLS URL is required before publishing.');
+            $this->pipelineOrchestrator->taskFailed(
+                $pipeline->id,
+                'hls_validate',
+                'HLS URL is required before publishing.',
+            );
+        } else {
+            $this->pipelineOrchestrator->taskSkipped($pipeline->id, 'hls_validate', [
+                'reason' => 'no_hls_url',
+            ]);
         }
 
-        ProcessMovieImagesJob::dispatch($movie->id, [], $pipeline->id)->afterResponse();
+        ProcessMovieImagesJob::dispatch($movie->id, [], $pipeline->id);
         $this->dispatchMovieCreditsJob($movie->id, $validated, $pipeline->id);
 
         return 'pending';
@@ -143,13 +141,9 @@ class ContentPipelineLauncher
             $triggeredBy,
         );
 
-        $this->pipelineOrchestrator->taskStarted($pipeline->id, 'image_primary');
-        $this->pipelineOrchestrator->taskCompleted($pipeline->id, 'image_primary', [
-            'poster' => filled($series->poster_url),
-            'backdrop' => filled($series->backdrop_url),
-        ]);
+        // image_primary is marked running by ProcessSeriesImagesJob when the worker starts it.
 
-        ProcessSeriesImagesJob::dispatch($series->id, [], $pipeline->id)->afterResponse();
+        ProcessSeriesImagesJob::dispatch($series->id, [], $pipeline->id);
         $this->dispatchSeriesCreditsJob($series->id, $validated, $pipeline->id);
 
         return 'pending';
@@ -224,32 +218,9 @@ class ContentPipelineLauncher
     /**
      * @param  array<string, mixed>  $validated
      */
-    private function dispatchMovieJobsWithoutPipeline(
-        int $movieId,
-        array $validated,
-        bool $shouldValidateHlsAsync,
-        ?string $canonicalHlsUrl,
-        string $manualHlsUrlRaw,
-        ?string $subtitleSourcePath,
-    ): void {
-        ProcessMovieImagesJob::dispatch($movieId)->afterResponse();
-        $this->dispatchMovieCreditsJob($movieId, $validated);
-
-        if ($shouldValidateHlsAsync && filled($canonicalHlsUrl)) {
-            ValidateHlsManifestJob::dispatch(
-                $movieId,
-                $manualHlsUrlRaw,
-                $subtitleSourcePath,
-            )->afterResponse();
-        }
-    }
-
-    /**
-     * @param  array<string, mixed>  $validated
-     */
     private function dispatchSeriesJobsWithoutPipeline(int $seriesId, array $validated): void
     {
-        ProcessSeriesImagesJob::dispatch($seriesId)->afterResponse();
+        ProcessSeriesImagesJob::dispatch($seriesId);
         $this->dispatchSeriesCreditsJob($seriesId, $validated);
     }
 
@@ -279,7 +250,7 @@ class ContentPipelineLauncher
             return;
         }
 
-        SyncMoviePersonCreditsJob::dispatch($movieId, $cast, $crew, $tmdbId, $pipelineId)->afterResponse();
+        SyncMoviePersonCreditsJob::dispatch($movieId, $cast, $crew, $tmdbId, $pipelineId);
     }
 
     /**
@@ -315,6 +286,6 @@ class ContentPipelineLauncher
             return;
         }
 
-        SyncSeriesPersonCreditsJob::dispatch($seriesId, $cast, $crew, $tmdbId, $pipelineId)->afterResponse();
+        SyncSeriesPersonCreditsJob::dispatch($seriesId, $cast, $crew, $tmdbId, $pipelineId);
     }
 }

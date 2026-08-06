@@ -82,6 +82,53 @@ class ContentImageIngestionServiceTest extends TestCase
         );
     }
 
+    public function test_process_movie_publication_defers_poster_ingest_for_queue(): void
+    {
+        $imageRoot = storage_path('framework/testing-image-root-unit-defer');
+        File::ensureDirectoryExists($imageRoot);
+        config(['cinema_images.storage_root' => $imageRoot]);
+
+        Http::fake([
+            'https://image.tmdb.org/*' => Http::response(
+                base64_decode('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=', true) ?: '',
+                200,
+                ['Content-Type' => 'image/jpeg'],
+            ),
+        ]);
+
+        $movie = Movie::query()->create([
+            'title' => 'Defer Test',
+            'slug' => 'defer-test',
+            'media_folder' => 'movies/defer-test',
+            'publish_status' => 'draft',
+            'processing_status' => 'pending',
+        ]);
+
+        $service = app(ContentImageIngestionService::class);
+        $tmdbPoster = 'https://image.tmdb.org/t/p/w780/poster.jpg';
+
+        $first = $service->processMoviePublication($movie, [
+            'poster_url' => $tmdbPoster,
+        ], [
+            'tmdb' => ['poster_url' => $tmdbPoster],
+        ], deferSecondaryImages: true);
+
+        $this->assertSame($tmdbPoster, data_get($first['metadata'], 'tmdb.poster_url'));
+        $this->assertSame($tmdbPoster, data_get($first['metadata'], 'tmdb.poster_source_url'));
+        $this->assertNull(data_get($first['metadata'], 'images.poster'));
+
+        $assetCountAfterDefer = \App\Models\ImageAsset::query()->count();
+
+        $movie->update(['metadata' => $first['metadata']]);
+        $processed = $service->processMovieDeferredSecondaryImages($movie->fresh());
+
+        $this->assertTrue($processed['poster']);
+        $this->assertStringStartsWith('/images/', (string) data_get($movie->fresh()->metadata, 'tmdb.poster_url'));
+        $this->assertGreaterThan($assetCountAfterDefer, \App\Models\ImageAsset::query()->count());
+
+        File::deleteDirectory($imageRoot);
+    }
+
     public function test_process_movie_publication_does_not_reingest_unchanged_tmdb_source(): void
     {
         $imageRoot = storage_path('framework/testing-image-root-unit-dedup');
@@ -132,7 +179,11 @@ class ContentImageIngestionServiceTest extends TestCase
     {
         $imageRoot = storage_path('framework/testing-image-root-unit-tmdb-sync');
         File::ensureDirectoryExists($imageRoot);
-        config(['cinema_images.storage_root' => $imageRoot]);
+        config([
+            'cinema_images.storage_root' => $imageRoot,
+            'cinema_images.public_base_url' => 'http://cinema.af',
+            'cinema_images.public_prefix' => '/images',
+        ]);
 
         Http::fake([
             'https://image.tmdb.org/*' => Http::response(
@@ -156,6 +207,7 @@ class ContentImageIngestionServiceTest extends TestCase
         $this->assertStringStartsWith('/images/', (string) $result['poster_url']);
         $this->assertStringStartsWith('/images/', (string) $result['backdrop_url']);
         $this->assertStringStartsWith('/images/', (string) $result['actors'][0]['profile_url']);
+        $this->assertStringNotContainsString('http://', (string) $result['poster_url']);
         $this->assertGreaterThanOrEqual(3, (int) data_get($result, 'stats.succeeded'));
 
         File::deleteDirectory($imageRoot);

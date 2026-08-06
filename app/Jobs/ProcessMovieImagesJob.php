@@ -28,19 +28,27 @@ class ProcessMovieImagesJob implements ShouldQueue
 
     public function handle(ContentImageIngestionService $contentImageIngestionService): void
     {
-        $this->pipelineStart();
-
         try {
             $movie = Movie::query()->find($this->movieId);
 
             if (! $movie) {
+                $this->pipelineSkip(['reason' => 'movie_not_found'], 'image_primary');
                 $this->pipelineSkip(['reason' => 'movie_not_found']);
 
                 return;
             }
 
-            $contentImageIngestionService->processMovieDeferredSecondaryImages($movie);
+            $this->pipelineStart('image_primary');
+
+            try {
+                $primary = $contentImageIngestionService->processMovieDeferredSecondaryImages($movie);
+                $this->pipelineComplete($primary, 'image_primary');
+            } catch (\Throwable $exception) {
+                $this->pipelineFail($exception->getMessage(), 'image_primary');
+            }
+
             $movie->refresh();
+            $this->pipelineStart();
 
             $metadata = is_array($movie->metadata) ? $movie->metadata : [];
             $actors = data_get($metadata, 'tmdb.actors', []);

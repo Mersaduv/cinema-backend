@@ -760,6 +760,8 @@ class AdminSeriesController extends Controller
             'backdrop_url' => CinemaValidation::nullableImageOrUrl(),
             'banner_url' => CinemaValidation::nullableImageOrUrl(),
             'logo_url' => CinemaValidation::nullableImageOrUrl(),
+            'poster_source_url' => CinemaValidation::nullableImageOrUrl(),
+            'backdrop_source_url' => CinemaValidation::nullableImageOrUrl(),
             'trailer_url' => ['nullable', 'url', 'max:2048'],
             'homepage_url' => ['nullable', 'url', 'max:2048'],
             'age_rating' => ['nullable', 'string', 'max:50'],
@@ -1104,6 +1106,10 @@ class AdminSeriesController extends Controller
                 'country_isos' => $countryIsos,
                 'actors' => $this->normalizeActors($validated['actors'] ?? []),
                 'synopsis_en' => $this->nullableString($validated['synopsis_en'] ?? null),
+                'poster_url' => $this->nullableString($validated['poster_url'] ?? null),
+                'backdrop_url' => $this->nullableString($validated['backdrop_url'] ?? null),
+                'poster_source_url' => $this->nullableString($validated['poster_source_url'] ?? null),
+                'backdrop_source_url' => $this->nullableString($validated['backdrop_source_url'] ?? null),
                 'exclusions' => [
                     'season_numbers' => collect($validated['tmdb_excluded_season_numbers'] ?? [])
                         ->map(fn ($value) => (int) $value)

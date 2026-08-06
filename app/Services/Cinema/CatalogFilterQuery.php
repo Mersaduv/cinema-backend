@@ -362,7 +362,8 @@ class CatalogFilterQuery
         $sort = strtolower(trim($sort));
 
         if ($sort === '') {
-            return $query;
+            // Admin default "جدیدترین" and any empty sort → newest created first.
+            return $query->reorder()->orderByDesc('created_at')->orderByDesc('id');
         }
 
         $query->reorder();
@@ -450,14 +451,88 @@ class CatalogFilterQuery
     }
 
     /**
-     * Keyset pagination — every public catalog sort ends with id DESC,
-     * so cursor pagination can safely use id < cursorId.
+     * Keyset (seek) pagination aligned with applySort() order clauses.
      *
      * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     * @param  array{id: int, sort: mixed}|null  $cursor
      */
-    public function applyCursor(Builder $query, int $cursorId, string $table): Builder
+    public function applyCursor(Builder $query, ?array $cursor, string $sort, string $table): Builder
     {
-        return $query->where($table.'.id', '<', $cursorId);
+        if ($cursor === null || ! isset($cursor['id'])) {
+            return $query;
+        }
+
+        $cursorId = (int) $cursor['id'];
+        $sortValue = $cursor['sort'] ?? null;
+        $sort = strtolower(trim($sort));
+
+        return match ($sort) {
+            'oldest' => $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'asc', 'asc'),
+            'title_asc' => $this->applyKeysetCursor($query, $table, 'title', $sortValue, $cursorId, 'asc', 'asc'),
+            'title_desc' => $this->applyKeysetCursor($query, $table, 'title', $sortValue, $cursorId, 'desc', 'asc'),
+            'release_year_asc', 'year_asc' => $this->applyKeysetCursor($query, $table, 'release_year', $sortValue, $cursorId, 'asc', 'asc'),
+            'release_year_desc', 'year_desc' => $this->applyKeysetCursor($query, $table, 'release_year', $sortValue, $cursorId, 'desc', 'desc'),
+            'popular' => $this->hasColumn($table, 'filter_popularity')
+                ? $this->applyKeysetCursor($query, $table, 'filter_popularity', $sortValue, $cursorId, 'desc', 'desc')
+                : $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'desc', 'desc'),
+            'popular_hybrid' => $this->hasColumn($table, 'popular_hybrid_score')
+                ? $this->applyKeysetCursor($query, $table, 'popular_hybrid_score', $sortValue, $cursorId, 'desc', 'desc')
+                : ($this->hasColumn($table, 'filter_popularity')
+                    ? $this->applyKeysetCursor($query, $table, 'filter_popularity', $sortValue, $cursorId, 'desc', 'desc')
+                    : $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'desc', 'desc')),
+            'top_rated', 'imdb_desc' => $this->hasColumn($table, 'filter_rating')
+                ? $this->applyKeysetCursor($query, $table, 'filter_rating', $sortValue, $cursorId, 'desc', 'desc')
+                : $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'desc', 'desc'),
+            'newest', 'featured' => $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'desc', 'desc'),
+            // Empty / created (admin-style) — primary created_at DESC, id DESC
+            'created', 'created_desc' => $this->applyKeysetCursor($query, $table, 'created_at', $sortValue, $cursorId, 'desc', 'desc'),
+            // Trending uses multi-expression ORDER BY; id DESC tie-break remains stable enough for rails.
+            default => $query->where($table.'.id', '<', $cursorId),
+        };
+    }
+
+    /**
+     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     * @param  'asc'|'desc'  $primaryDirection
+     * @param  'asc'|'desc'  $idDirection
+     */
+    private function applyKeysetCursor(
+        Builder $query,
+        string $table,
+        string $column,
+        mixed $sortValue,
+        int $cursorId,
+        string $primaryDirection,
+        string $idDirection,
+    ): Builder {
+        $qualified = $table.'.'.$column;
+        $idColumn = $table.'.id';
+
+        if ($sortValue === null || $sortValue === '') {
+            return $idDirection === 'desc'
+                ? $query->where($idColumn, '<', $cursorId)
+                : $query->where($idColumn, '>', $cursorId);
+        }
+
+        $primaryOperator = $primaryDirection === 'desc' ? '<' : '>';
+        $idOperator = $idDirection === 'desc' ? '<' : '>';
+
+        return $query->where(function (Builder $builder) use (
+            $qualified,
+            $idColumn,
+            $sortValue,
+            $cursorId,
+            $primaryOperator,
+            $idOperator,
+        ): void {
+            $builder
+                ->where($qualified, $primaryOperator, $sortValue)
+                ->orWhere(function (Builder $inner) use ($qualified, $idColumn, $sortValue, $cursorId, $idOperator): void {
+                    $inner
+                        ->where($qualified, '=', $sortValue)
+                        ->where($idColumn, $idOperator, $cursorId);
+                });
+        });
     }
 
     public function isCarouselMode(Request $request): bool

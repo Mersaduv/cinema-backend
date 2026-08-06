@@ -117,11 +117,10 @@ class CatalogContentRankingSyncService
 
         $contentType = $row instanceof Movie ? 'movie' : 'series';
 
-        SyncCatalogContentRankingJob::dispatch($contentType, (int) $row->id)
-            ->afterResponse();
+        SyncCatalogContentRankingJob::dispatch($contentType, (int) $row->id);
 
         if ($includeTrendingRefresh && $row->publish_status === 'published') {
-            RefreshTrendingJob::dispatch('day')->afterResponse();
+            RefreshTrendingJob::dispatch('day');
         }
     }
 

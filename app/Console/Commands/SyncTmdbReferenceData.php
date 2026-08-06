@@ -97,7 +97,7 @@ class SyncTmdbReferenceData extends Command
             ProductionCountry::query()->updateOrCreate(
                 ['iso_3166_1' => $iso],
                 [
-                    'name' => (string) ($row['native_name'] ?? $row['english_name'] ?? $iso),
+                    'name' => $this->preferredCountryName($row, $iso),
                     'native_name' => $row['native_name'] ?? null,
                     'english_name' => $row['english_name'] ?? null,
                     'flag_emoji' => $this->flagForIso($iso),
@@ -126,7 +126,7 @@ class SyncTmdbReferenceData extends Command
             SpokenLanguage::query()->updateOrCreate(
                 ['iso_639_1' => $iso],
                 [
-                    'name' => (string) ($row['name'] ?? $iso),
+                    'name' => $this->preferredLanguageName($row, $iso),
                     'english_name' => (string) ($row['english_name'] ?? $row['name'] ?? $iso),
                 ],
             );
@@ -193,6 +193,34 @@ class SyncTmdbReferenceData extends Command
         $response->throw();
 
         return $response->json() ?? [];
+    }
+
+    private function preferredLanguageName(array $row, string $iso): string
+    {
+        $native = trim((string) ($row['name'] ?? ''));
+        $english = trim((string) ($row['english_name'] ?? ''));
+
+        if ($native !== '' && ! preg_match('/^[\?\s]+$/u', $native)) {
+            return $native;
+        }
+
+        if ($english !== '') {
+            return $english;
+        }
+
+        return $iso;
+    }
+
+    private function preferredCountryName(array $row, string $iso): string
+    {
+        foreach (['native_name', 'english_name'] as $key) {
+            $value = trim((string) ($row[$key] ?? ''));
+            if ($value !== '' && ! preg_match('/^[\?\s]+$/u', $value)) {
+                return $value;
+            }
+        }
+
+        return $iso;
     }
 
     private function flagForIso(string $iso): ?string

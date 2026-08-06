@@ -18,10 +18,10 @@ class CatalogCarouselService
      */
     public function fetchMovies(Request $request, int $perPage): array
     {
-        $cursorId = CatalogCarouselCursor::decodeId($request->string('cursor')->toString() ?: null);
+        $cursor = CatalogCarouselCursor::decode($request->string('cursor')->toString() ?: null);
         $params = $this->catalogFilterQuery->procedureParams($request, 'movies');
 
-        if ($cursorId === null) {
+        if ($cursor === null) {
             $page = max(1, (int) $request->integer('page', 1));
             $result = $this->catalogListProcedureService->publicMoviesCatalog(
                 $params['search'],
@@ -41,22 +41,11 @@ class CatalogCarouselService
 
         $query = Movie::query()->where('publish_status', 'published');
         $this->catalogFilterQuery->apply($query, $request, 'movies');
-        $this->catalogFilterQuery->applyCursor($query, $cursorId, 'movies');
+        $this->catalogFilterQuery->applyCursor($query, $cursor, $params['sort'], 'movies');
 
         $models = $query
             ->limit($perPage + 1)
-            ->get([
-                'id',
-                'title',
-                'slug',
-                'synopsis',
-                'release_year',
-                'poster_path',
-                'has_subtitle',
-                'has_dubbed_audio',
-                'filter_rating',
-                'metadata',
-            ]);
+            ->get($this->movieSelectColumns());
 
         $rows = $models->map(fn (Movie $movie) => $this->movieToRow($movie))->all();
         $total = $this->countMovies($request);
@@ -69,10 +58,10 @@ class CatalogCarouselService
      */
     public function fetchSeries(Request $request, int $perPage): array
     {
-        $cursorId = CatalogCarouselCursor::decodeId($request->string('cursor')->toString() ?: null);
+        $cursor = CatalogCarouselCursor::decode($request->string('cursor')->toString() ?: null);
         $params = $this->catalogFilterQuery->procedureParams($request, 'series');
 
-        if ($cursorId === null) {
+        if ($cursor === null) {
             $page = max(1, (int) $request->integer('page', 1));
             $result = $this->catalogListProcedureService->publicSeriesCatalog(
                 $params['search'],
@@ -92,28 +81,11 @@ class CatalogCarouselService
 
         $query = Series::query()->where('publish_status', 'published');
         $this->catalogFilterQuery->apply($query, $request, 'series');
-        $this->catalogFilterQuery->applyCursor($query, $cursorId, 'series');
+        $this->catalogFilterQuery->applyCursor($query, $cursor, $params['sort'], 'series');
 
         $models = $query
             ->limit($perPage + 1)
-            ->get([
-                'id',
-                'title',
-                'slug',
-                'original_title',
-                'synopsis',
-                'release_year',
-                'status',
-                'network',
-                'poster_url',
-                'backdrop_url',
-                'has_subtitle',
-                'has_dubbed',
-                'number_of_seasons',
-                'number_of_episodes',
-                'filter_rating',
-                'metadata',
-            ]);
+            ->get($this->seriesSelectColumns());
 
         $rows = $models->map(fn (Series $series) => $this->seriesToRow($series))->all();
         $total = $this->countSeries($request);
@@ -156,6 +128,9 @@ class CatalogCarouselService
             'has_subtitle' => $movie->has_subtitle,
             'has_dubbed_audio' => $movie->has_dubbed_audio,
             'filter_rating' => $movie->filter_rating,
+            'filter_popularity' => $movie->filter_popularity ?? null,
+            'popular_hybrid_score' => $movie->popular_hybrid_score ?? null,
+            'published_at' => $movie->published_at,
             'metadata' => $movie->metadata,
         ];
     }
@@ -181,7 +156,60 @@ class CatalogCarouselService
             'number_of_seasons' => $series->number_of_seasons,
             'number_of_episodes' => $series->number_of_episodes,
             'filter_rating' => $series->filter_rating,
+            'filter_popularity' => $series->filter_popularity ?? null,
+            'popular_hybrid_score' => $series->popular_hybrid_score ?? null,
+            'published_at' => $series->published_at,
             'metadata' => $series->metadata,
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function movieSelectColumns(): array
+    {
+        return [
+            'id',
+            'title',
+            'slug',
+            'synopsis',
+            'release_year',
+            'poster_path',
+            'has_subtitle',
+            'has_dubbed_audio',
+            'filter_rating',
+            'filter_popularity',
+            'popular_hybrid_score',
+            'published_at',
+            'metadata',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function seriesSelectColumns(): array
+    {
+        return [
+            'id',
+            'title',
+            'slug',
+            'original_title',
+            'synopsis',
+            'release_year',
+            'status',
+            'network',
+            'poster_url',
+            'backdrop_url',
+            'has_subtitle',
+            'has_dubbed',
+            'number_of_seasons',
+            'number_of_episodes',
+            'filter_rating',
+            'filter_popularity',
+            'popular_hybrid_score',
+            'published_at',
+            'metadata',
         ];
     }
 
@@ -203,15 +231,21 @@ class CatalogCarouselService
 
     public function sortValueFromMovieRow(array $row, string $sort): mixed
     {
-        return match (strtolower(trim($sort))) {
+        $value = match (strtolower(trim($sort))) {
             'popular' => $row['filter_popularity'] ?? null,
             'popular_hybrid' => $row['popular_hybrid_score'] ?? null,
             'top_rated', 'imdb_desc' => $row['filter_rating'] ?? null,
-            'release_year_desc', 'year_desc' => $row['release_year'] ?? null,
-            'release_year_asc', 'year_asc' => $row['release_year'] ?? null,
+            'release_year_desc', 'year_desc', 'release_year_asc', 'year_asc' => $row['release_year'] ?? null,
             'title_asc', 'title_desc' => $row['title'] ?? null,
+            'oldest', 'newest', 'featured' => $row['published_at'] ?? $row['id'],
             default => $row['published_at'] ?? $row['id'],
         };
+
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        return $value;
     }
 
     public function sortValueFromSeriesRow(array $row, string $sort): mixed

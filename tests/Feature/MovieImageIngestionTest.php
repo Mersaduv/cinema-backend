@@ -41,7 +41,7 @@ class MovieImageIngestionTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_publication_form_ingests_movie_poster_and_backdrop_images(): void
+    public function test_publication_form_defers_movie_image_ingest_to_queue_job(): void
     {
         $admin = $this->createAdminUser();
         Sanctum::actingAs($admin);
@@ -88,11 +88,22 @@ class MovieImageIngestionTest extends TestCase
         $posterUrl = data_get($movie, 'metadata.tmdb.poster_url');
         $backdropUrl = data_get($movie, 'metadata.tmdb.backdrop_url');
 
-        $this->assertStringStartsWith('/images/', (string) $posterUrl);
-        $this->assertStringStartsWith('/images/', (string) $backdropUrl);
-        $this->assertNotNull(data_get($movie, 'metadata.images.poster.original'));
-        $this->assertNotNull(data_get($movie, 'metadata.images.backdrop.original'));
-        $this->assertStringContainsString('width=384', (string) data_get($movie, 'metadata.images.poster.src'));
+        // Save must return immediately with remote/source URLs — ingest happens in queue.
+        $this->assertStringStartsWith('https://image.tmdb.org/', (string) $posterUrl);
+        $this->assertStringStartsWith('https://image.tmdb.org/', (string) $backdropUrl);
+        $this->assertStringStartsWith('https://image.tmdb.org/', (string) data_get($movie, 'metadata.tmdb.poster_source_url'));
+        $this->assertNull(data_get($movie, 'metadata.images.poster'));
+
+        (new \App\Jobs\ProcessMovieImagesJob((int) $movieId))->handle(
+            app(\App\Services\Cinema\ContentImageIngestionService::class),
+        );
+
+        $fresh = \App\Models\Movie::query()->findOrFail($movieId);
+        $this->assertStringStartsWith('/images/', (string) data_get($fresh->metadata, 'tmdb.poster_url'));
+        $this->assertStringStartsWith('/images/', (string) data_get($fresh->metadata, 'tmdb.backdrop_url'));
+        $this->assertNotNull(data_get($fresh->metadata, 'images.poster.original'));
+        $this->assertNotNull(data_get($fresh->metadata, 'images.backdrop.original'));
+        $this->assertStringContainsString('width=384', (string) data_get($fresh->metadata, 'images.poster.src'));
 
         $this->assertGreaterThanOrEqual(1, ImageAsset::query()->where('status', 'ready')->count());
         $this->assertDatabaseHas('image_assets', [
@@ -101,12 +112,10 @@ class MovieImageIngestionTest extends TestCase
             'image_type' => 'poster',
             'status' => 'ready',
         ]);
-        $this->assertStringStartsWith('/images/', (string) data_get($movie, 'metadata.tmdb.banner_url'));
-        $this->assertStringStartsWith('/images/', (string) data_get($movie, 'metadata.tmdb.logo_url'));
-        $this->assertNotNull(data_get($movie, 'metadata.images.banner'));
-        $this->assertNotNull(data_get($movie, 'metadata.images.logo'));
-        $this->assertNotNull(data_get($movie, 'poster_image.original'));
-        $this->assertNotNull(data_get($movie, 'backdrop_image.original'));
+        $this->assertStringStartsWith('/images/', (string) data_get($fresh->metadata, 'tmdb.banner_url'));
+        $this->assertStringStartsWith('/images/', (string) data_get($fresh->metadata, 'tmdb.logo_url'));
+        $this->assertNotNull(data_get($fresh->metadata, 'images.banner'));
+        $this->assertNotNull(data_get($fresh->metadata, 'images.logo'));
     }
 
     private function createAdminUser(): User

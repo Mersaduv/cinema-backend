@@ -110,12 +110,19 @@ class ImageIngestionService
                 ->first();
 
             if ($duplicateByChecksum) {
-                @unlink($plan['physical_path']);
-                $failedAsset->delete();
+                if (! $this->ensureAssetFileOnCurrentRoot($duplicateByChecksum)) {
+                    $duplicateByChecksum->update([
+                        'status' => 'failed',
+                        'error_message' => 'Duplicate checksum asset missing on current storage root.',
+                    ]);
+                } else {
+                    @unlink($plan['physical_path']);
+                    $failedAsset->delete();
 
-                $this->attachEntityContext($duplicateByChecksum, $context);
+                    $this->attachEntityContext($duplicateByChecksum, $context);
 
-                return $this->successFromAsset($duplicateByChecksum, $fallbackUrl);
+                    return $this->successFromAsset($duplicateByChecksum, $fallbackUrl);
+                }
             }
 
             $imageObject = $this->variantUrlBuilder->buildFromPublicPath(
@@ -270,22 +277,21 @@ class ImageIngestionService
                 ->where('status', 'ready')
                 ->first();
 
-            if ($existingManaged && filled($existingManaged->physical_storage_path) && is_file((string) $existingManaged->physical_storage_path)) {
+            if ($existingManaged && $this->ensureAssetFileOnCurrentRoot($existingManaged)) {
                 return $this->successFromAsset($existingManaged, $fallbackUrl);
             }
 
-            $imageObject = $this->variantUrlBuilder->buildFromPublicPath(
-                $this->variantUrlBuilder->buildAbsoluteOrRelativeUrl($normalizedSource),
-            );
+            // Managed URL without a real file must NOT be treated as success — force re-ingest
+            // from the original remote source (fallbackUrl) when available.
+            if ($this->sourceNormalizer->isIngestible($fallbackUrl) && ! $this->variantUrlBuilder->isManagedPublicUrl($fallbackUrl)) {
+                return null;
+            }
 
-            return [
-                'success' => true,
-                'processed_url' => $normalizedSource,
-                'fallback_url' => $fallbackUrl,
-                'image' => $imageObject,
-                'asset' => null,
-                'error' => null,
-            ];
+            return $this->failureResult(
+                $fallbackUrl,
+                $existingManaged,
+                'Managed image URL has no file on disk.',
+            );
         }
 
         $sourceHash = $this->sourceNormalizer->sourceHash($normalizedSource);
@@ -296,10 +302,10 @@ class ImageIngestionService
             ->first();
 
         if ($existing?->status === 'ready') {
-            if (! filled($existing->physical_storage_path) || ! is_file((string) $existing->physical_storage_path)) {
+            if (! $this->ensureAssetFileOnCurrentRoot($existing)) {
                 $existing->update([
                     'status' => 'failed',
-                    'error_message' => 'Image file is missing on disk; re-ingesting.',
+                    'error_message' => 'Image file is missing on current storage root; re-ingesting.',
                 ]);
 
                 return null;
@@ -311,6 +317,31 @@ class ImageIngestionService
         }
 
         return null;
+    }
+
+    private function ensureAssetFileOnCurrentRoot(ImageAsset $asset): bool
+    {
+        $publicUrl = (string) ($asset->original_public_url ?? '');
+
+        if ($publicUrl === '') {
+            return filled($asset->physical_storage_path) && is_file((string) $asset->physical_storage_path);
+        }
+
+        $physical = $this->imageStorageService->ensureManagedFileOnCurrentRoot(
+            $publicUrl,
+            filled($asset->physical_storage_path) ? (string) $asset->physical_storage_path : null,
+        );
+
+        if ($physical === null) {
+            return false;
+        }
+
+        if ((string) $asset->physical_storage_path !== $physical) {
+            $asset->update(['physical_storage_path' => $physical]);
+            $asset->physical_storage_path = $physical;
+        }
+
+        return true;
     }
 
     /**

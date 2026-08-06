@@ -57,3 +57,13 @@ If you discover a security vulnerability within Laravel, please send an e-mail t
 ## License
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+
+
+
+پروژه را کامل بررسی و درک کن هم فرانت اند هم بک اند هم دیتابیس .
+هدف : میخام جدول کاربران و بیننده جدا باشد
+- کاربران امکان ثبت نام نداشته باشند صرفا از طریق مدیر ساخته میشود.
+- ساختار ثبت نام صرفا برای بیننده ها باشد.
+- صفحه بیننده ها در پنل ادمین درست کن.
+- کابر وقتی از طرف مدیر ساخته میشود کاربر مد نظر وقتی login شد نباید صفحه profile و قابلیت های بیننده داشته باشد چون کلا بخش جدایی است.
+- صفحه ورودی ادمین نباید مستقیم از صفحه "/login" باشد باید از مسیر adminbod یعنی "/adminbod" قابل ورود به فرم login یعنی صفحه ورودی کاربر ها و مدیر صفحه مختص خودش داشته باشه با صفحه login بیننده ها.

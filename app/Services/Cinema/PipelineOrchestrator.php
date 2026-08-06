@@ -6,7 +6,6 @@ use App\Models\ContentPipeline;
 use App\Models\Movie;
 use App\Models\Series;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 
 class PipelineOrchestrator
 {
@@ -226,20 +225,9 @@ class PipelineOrchestrator
             ]);
         }
 
-        app(CatalogCacheService::class)->scheduleRebuildAfterContentChange();
-
-        $revalidationUrl = config('cinema.revalidation_url');
-
-        if (filled($revalidationUrl)) {
-            try {
-                Http::timeout(5)->post((string) $revalidationUrl, [
-                    'secret' => config('cinema.revalidation_secret'),
-                    'path' => $entityType === 'movie' ? '/movies' : '/series',
-                ]);
-            } catch (\Throwable) {
-                // Non-blocking cache bust for Next.js.
-            }
-        }
+        app(CatalogCacheService::class)->scheduleRebuildAfterContentChange(
+            $entityType === 'movie' ? ['/movies'] : ['/series'],
+        );
     }
 
     private function failPipeline(int $pipelineId, string $errorSummary): void
@@ -270,9 +258,26 @@ class PipelineOrchestrator
 
     private function cancelRunningPipeline(string $entityType, int $entityId): void
     {
-        ContentPipeline::query()
+        $runningIds = ContentPipeline::query()
             ->where('entity_type', $entityType)
             ->where('entity_id', $entityId)
+            ->whereIn('status', ['pending', 'running'])
+            ->pluck('id')
+            ->all();
+
+        if ($runningIds === []) {
+            return;
+        }
+
+        ContentPipeline::query()
+            ->whereIn('id', $runningIds)
+            ->update([
+                'status' => 'cancelled',
+                'updated_at' => now(),
+            ]);
+
+        DB::table('content_pipeline_tasks')
+            ->whereIn('pipeline_id', $runningIds)
             ->whereIn('status', ['pending', 'running'])
             ->update([
                 'status' => 'cancelled',

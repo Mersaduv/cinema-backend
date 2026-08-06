@@ -197,15 +197,20 @@ class GenreAlignmentService
         return in_array($contentType, ['tv', 'series'], true) ? 'tv' : 'movie';
     }
 
+    /**
+     * Light cache bust after genre pivot sync (no catalog rebuild / Next revalidation).
+     * Callers that need a full rebuild should invoke CatalogCacheService once.
+     */
     public function touchAfterAlignment(): void
     {
-        $this->afterAlignment();
+        Cache::forget('filter_options');
+        Cache::forget('filter_options_v2');
+        $this->adminReferenceOptions->invalidate();
     }
 
     private function afterAlignment(): void
     {
-        Cache::forget('filter_options');
-        $this->adminReferenceOptions->invalidate();
+        $this->touchAfterAlignment();
         $this->catalogCache->scheduleRebuildAfterContentChange();
     }
 }

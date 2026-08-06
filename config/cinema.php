@@ -19,8 +19,14 @@ return [
         'CINEMA_HLS_SOURCE_PROBE_FILENAMES',
         'source.mp4,movie.mp4,download.mp4,full.mp4'
     ))))),
-    'revalidation_url' => env('CINEMA_REVALIDATION_URL'),
-    'revalidation_secret' => env('CINEMA_REVALIDATION_SECRET'),
+    'revalidation_url' => env('CINEMA_REVALIDATION_URL', env('NEXT_REVALIDATION_URL', env('FRONTEND_URL', 'http://localhost:3000'))),
+    'revalidation_secret' => env('CINEMA_REVALIDATION_SECRET', env('NEXT_REVALIDATION_SECRET')),
+    /**
+     * Next.js on-demand revalidation (must use config(), never env() in jobs —
+     * env() is null when `php artisan config:cache` is active).
+     */
+    'next_revalidation_url' => env('NEXT_REVALIDATION_URL', env('CINEMA_REVALIDATION_URL', env('FRONTEND_URL', 'http://localhost:3000'))),
+    'next_revalidation_secret' => env('NEXT_REVALIDATION_SECRET', env('CINEMA_REVALIDATION_SECRET')),
     'ffmpeg_binary' => env('CINEMA_FFMPEG_BINARY', 'ffmpeg'),
     'movies_directory' => 'movies',
     'hls_directory' => 'hls',

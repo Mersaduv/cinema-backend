@@ -72,39 +72,50 @@ class NextPublicCacheRevalidationService
      */
     private function dispatch(array $paths, array $tags): void
     {
-        $url = env('NEXT_REVALIDATION_URL');
-        $secret = env('NEXT_REVALIDATION_SECRET');
+        $url = (string) (
+            config('cinema.next_revalidation_url')
+            ?: config('cinema.revalidation_url')
+            ?: ''
+        );
+        $secret = (string) (
+            config('cinema.next_revalidation_secret')
+            ?: config('cinema.revalidation_secret')
+            ?: ''
+        );
 
         if (! filled($url)) {
-            $frontend = env('FRONTEND_URL', env('APP_FRONTEND_URL', 'http://localhost:3000'));
-            $url = rtrim((string) $frontend, '/');
-        }
-
-        if (! filled($secret)) {
-            Log::debug('Next.js cache revalidation skipped: NEXT_REVALIDATION_SECRET is not set.');
+            Log::warning('Next.js cache revalidation skipped: NEXT_REVALIDATION_URL is not configured.');
 
             return;
         }
 
-        $endpoint = rtrim((string) $url, '/').'/api/revalidate';
+        if (! filled($secret)) {
+            Log::warning('Next.js cache revalidation skipped: NEXT_REVALIDATION_SECRET is not configured.');
+
+            return;
+        }
+
+        $endpoint = rtrim($url, '/').'/api/revalidate';
 
         try {
-            foreach (array_unique($tags) as $tag) {
-                Http::timeout(5)->post($endpoint, [
-                    'secret' => $secret,
-                    'tag' => $tag,
-                ]);
-            }
+            $response = Http::timeout(8)->acceptJson()->asJson()->post($endpoint, [
+                'secret' => $secret,
+                'tags' => array_values(array_unique($tags)),
+                'paths' => array_values(array_unique($paths)),
+                'mode' => 'immediate',
+            ]);
 
-            foreach (array_unique($paths) as $path) {
-                Http::timeout(5)->post($endpoint, [
-                    'secret' => $secret,
-                    'path' => $path,
+            if (! $response->successful()) {
+                Log::warning('Next.js cache revalidation rejected', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                    'endpoint' => $endpoint,
                 ]);
             }
         } catch (\Throwable $exception) {
             Log::warning('Next.js cache revalidation failed', [
                 'message' => $exception->getMessage(),
+                'endpoint' => $endpoint,
             ]);
         }
     }

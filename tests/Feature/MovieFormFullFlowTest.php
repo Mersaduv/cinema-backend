@@ -134,12 +134,19 @@ class MovieFormFullFlowTest extends TestCase
         $publication->assertJsonPath('success', true);
 
         $movie = $publication->json('data.movie');
-        $this->assertStringStartsWith('/images/', (string) data_get($movie, 'metadata.tmdb.poster_url'));
-        $this->assertStringStartsWith('/images/', (string) data_get($movie, 'metadata.tmdb.backdrop_url'));
-        $this->assertNotNull(data_get($movie, 'metadata.images.poster'));
-        $this->assertNotNull(data_get($movie, 'metadata.images.backdrop'));
-        $this->assertNotNull(data_get($movie, 'poster_image.original'));
+        $this->assertStringStartsWith('https://image.tmdb.org/', (string) data_get($movie, 'metadata.tmdb.poster_url'));
+        $this->assertStringStartsWith('https://image.tmdb.org/', (string) data_get($movie, 'metadata.tmdb.backdrop_url'));
+        $this->assertNull(data_get($movie, 'metadata.images.poster'));
+
+        (new \App\Jobs\ProcessMovieImagesJob((int) $movieId))->handle(
+            app(\App\Services\Cinema\ContentImageIngestionService::class),
+        );
+
         $stored = Movie::query()->findOrFail($movieId);
+        $this->assertStringStartsWith('/images/', (string) data_get($stored->metadata, 'tmdb.poster_url'));
+        $this->assertStringStartsWith('/images/', (string) data_get($stored->metadata, 'tmdb.backdrop_url'));
+        $this->assertNotNull(data_get($stored->metadata, 'images.poster'));
+        $this->assertNotNull(data_get($stored->metadata, 'images.backdrop'));
         $this->assertStringStartsWith('https://image.tmdb.org/', (string) data_get($stored->metadata, 'tmdb.poster_source_url'));
         $this->assertStringStartsWith('https://image.tmdb.org/', (string) data_get($stored->metadata, 'tmdb.backdrop_source_url'));
 
@@ -153,8 +160,8 @@ class MovieFormFullFlowTest extends TestCase
         // Step 3 — show (edit hydration)
         $show = $this->getJson("/api/admin/movies/{$movieId}");
         $show->assertOk();
-        $show->assertJsonPath('data.movie.metadata.images.poster.original', data_get($movie, 'metadata.images.poster.original'));
-        $show->assertJsonPath('data.movie.poster_url', data_get($movie, 'metadata.tmdb.poster_url'));
+        $show->assertJsonPath('data.movie.metadata.images.poster.original', data_get($stored->metadata, 'images.poster.original'));
+        $show->assertJsonPath('data.movie.poster_url', data_get($stored->metadata, 'tmdb.poster_url'));
 
         // Step 4 — mark ready + publish (no HLS required when no hls_url)
         Movie::query()->whereKey($movieId)->update(['processing_status' => 'ready']);

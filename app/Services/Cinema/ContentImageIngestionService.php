@@ -18,6 +18,7 @@ class ContentImageIngestionService
         private readonly ImageIngestionService $imageIngestionService,
         private readonly ImageSourceNormalizer $sourceNormalizer,
         private readonly ImageVariantUrlBuilder $variantUrlBuilder,
+        private readonly ImageStorageService $imageStorageService,
     ) {
     }
 
@@ -37,6 +38,20 @@ class ContentImageIngestionService
         $formUrl = trim((string) $formUrl);
 
         if ($this->variantUrlBuilder->isManagedPublicUrl($formUrl)) {
+            if ($this->managedPublicFileExists($formUrl)) {
+                return null;
+            }
+
+            $source = filled($storedSourceUrl) ? trim((string) $storedSourceUrl) : '';
+
+            if (
+                $source !== ''
+                && ! $this->variantUrlBuilder->isManagedPublicUrl($source)
+                && $this->sourceNormalizer->isIngestible($source)
+            ) {
+                return $source;
+            }
+
             return null;
         }
 
@@ -53,6 +68,19 @@ class ContentImageIngestionService
         }
 
         return $formUrl;
+    }
+
+    private function managedPublicFileExists(string $publicUrl): bool
+    {
+        try {
+            $path = parse_url($publicUrl, PHP_URL_PATH);
+            $path = is_string($path) && $path !== '' ? $path : $publicUrl;
+            $path = explode('?', $path, 2)[0];
+
+            return is_file($this->imageStorageService->toPhysicalPath($path));
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -95,17 +123,34 @@ class ContentImageIngestionService
             $ingestUrl = $this->resolveIngestUrl((string) $formUrl, $storedProcessed, $storedSource);
 
             if ($ingestUrl === null) {
-                if ($this->variantUrlBuilder->isManagedPublicUrl((string) $formUrl)) {
+                if (
+                    $this->variantUrlBuilder->isManagedPublicUrl((string) $formUrl)
+                    && $this->managedPublicFileExists((string) $formUrl)
+                ) {
                     $tmdb[$field] = $formUrl;
+
+                    if (filled($storedSource)) {
+                        $tmdb[$this->sourceMetadataKey($field)] = (string) $storedSource;
+                    }
                 } elseif (isset($images[$imageType])) {
                     $tmdb[$field] = data_get($images[$imageType], 'original', data_get($tmdb, $field));
+                } elseif (filled($storedSource) && $this->sourceNormalizer->isIngestible((string) $storedSource)) {
+                    $tmdb[$field] = (string) $storedSource;
+                    $tmdb[$this->sourceMetadataKey($field)] = (string) $storedSource;
                 }
 
                 continue;
             }
 
-            if ($deferSecondaryImages && $imageType !== 'poster') {
-                $tmdb[$field] = (string) $formUrl;
+            // Keep remote/source URLs on the record; ProcessMovieImagesJob ingests later
+            // so publication-form returns immediately.
+            if ($deferSecondaryImages) {
+                $displayUrl = $this->variantUrlBuilder->isManagedPublicUrl((string) $formUrl)
+                    && ! $this->managedPublicFileExists((string) $formUrl)
+                    ? $ingestUrl
+                    : (string) $formUrl;
+
+                $tmdb[$field] = $displayUrl;
                 $tmdb[$this->sourceMetadataKey($field)] = $ingestUrl;
 
                 continue;
@@ -138,27 +183,46 @@ class ContentImageIngestionService
         ];
     }
 
-    public function processMovieDeferredSecondaryImages(Movie $movie): void
+    /**
+     * Ingest poster/backdrop/banner/logo that were deferred on save.
+     *
+     * @return array{poster: bool, backdrop: bool, banner: bool, logo: bool}
+     */
+    public function processMovieDeferredSecondaryImages(Movie $movie): array
     {
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
         $images = is_array($metadata['images'] ?? null) ? $metadata['images'] : [];
         $tmdb = is_array($metadata['tmdb'] ?? null) ? $metadata['tmdb'] : [];
         $changed = false;
+        $processed = [
+            'poster' => isset($images['poster']),
+            'backdrop' => isset($images['backdrop']),
+            'banner' => isset($images['banner']),
+            'logo' => isset($images['logo']),
+        ];
 
         foreach ([
+            'poster_url' => 'poster',
             'backdrop_url' => 'backdrop',
             'banner_url' => 'banner',
             'logo_url' => 'logo',
         ] as $field => $imageType) {
-            if (isset($images[$imageType])) {
+            $existingOriginal = data_get($images, "{$imageType}.original");
+
+            if (
+                isset($images[$imageType])
+                && is_string($existingOriginal)
+                && $this->managedPublicFileExists($existingOriginal)
+            ) {
+                $processed[$imageType] = true;
+
                 continue;
             }
 
             $formUrl = $tmdb[$field] ?? null;
             $storedSource = data_get($tmdb, $this->sourceMetadataKey($field));
-            $ingestUrl = $this->resolveIngestUrl(
-                is_string($formUrl) ? $formUrl : '',
-                null,
+            $ingestUrl = $this->resolveDeferredIngestUrl(
+                is_string($formUrl) ? $formUrl : null,
                 is_string($storedSource) ? $storedSource : null,
             );
 
@@ -170,26 +234,27 @@ class ContentImageIngestionService
                 'entity_type' => 'movie',
                 'entity_id' => $movie->id,
                 'image_type' => $imageType,
-                'is_primary' => false,
+                'is_primary' => $imageType === 'poster',
             ]);
 
-            $preferredUrl = $result['processed_url'] ?? (string) $formUrl;
+            $preferredUrl = $result['processed_url'] ?? (string) ($formUrl ?? $ingestUrl);
             $tmdb[$field] = $preferredUrl;
             $tmdb[$this->sourceMetadataKey($field)] = $ingestUrl;
 
             if ($result['image']) {
                 $images[$imageType] = $result['image'];
+                $processed[$imageType] = true;
                 $changed = true;
             }
         }
 
-        if (! $changed) {
-            return;
+        if ($changed) {
+            $metadata['tmdb'] = $tmdb;
+            $metadata['images'] = $images;
+            $movie->update(['metadata' => $metadata]);
         }
 
-        $metadata['tmdb'] = $tmdb;
-        $metadata['images'] = $images;
-        $movie->update(['metadata' => $metadata]);
+        return $processed;
     }
 
     /**
@@ -230,7 +295,10 @@ class ContentImageIngestionService
             $ingestUrl = $this->resolveIngestUrl((string) $formUrl, $storedProcessed, $storedSource);
 
             if ($ingestUrl === null) {
-                if ($this->variantUrlBuilder->isManagedPublicUrl((string) $formUrl)) {
+                if (
+                    $this->variantUrlBuilder->isManagedPublicUrl((string) $formUrl)
+                    && $this->managedPublicFileExists((string) $formUrl)
+                ) {
                     $preferred = (string) $formUrl;
 
                     if (in_array($field, ['poster_url', 'backdrop_url'], true)) {
@@ -238,6 +306,10 @@ class ContentImageIngestionService
                     }
 
                     data_set($metadata, 'tmdb.' . $field, $preferred);
+
+                    if (filled($storedSource)) {
+                        data_set($metadata, 'tmdb.' . $this->sourceMetadataKey($field), (string) $storedSource);
+                    }
                 } elseif (isset($images[$imageType])) {
                     $preferred = data_get($images[$imageType], 'original');
 
@@ -246,17 +318,31 @@ class ContentImageIngestionService
                     }
 
                     data_set($metadata, 'tmdb.' . $field, $preferred);
+                } elseif (filled($storedSource) && $this->sourceNormalizer->isIngestible((string) $storedSource)) {
+                    // Broken managed URL without a recoverable ingest target — keep remote source for display/retry.
+                    if (in_array($field, ['poster_url', 'backdrop_url'], true)) {
+                        $updates[$field] = (string) $storedSource;
+                    }
+
+                    data_set($metadata, 'tmdb.' . $field, (string) $storedSource);
+                    data_set($metadata, 'tmdb.' . $this->sourceMetadataKey($field), (string) $storedSource);
                 }
 
                 continue;
             }
 
-            if ($deferSecondaryImages && $imageType !== 'poster') {
+            // Keep remote/source URLs; ProcessSeriesImagesJob ingests later.
+            if ($deferSecondaryImages) {
+                $displayUrl = $this->variantUrlBuilder->isManagedPublicUrl((string) $formUrl)
+                    && ! $this->managedPublicFileExists((string) $formUrl)
+                    ? $ingestUrl
+                    : (string) $formUrl;
+
                 if (in_array($field, ['poster_url', 'backdrop_url'], true)) {
-                    $updates[$field] = (string) $formUrl;
+                    $updates[$field] = $displayUrl;
                 }
 
-                data_set($metadata, 'tmdb.' . $field, (string) $formUrl);
+                data_set($metadata, 'tmdb.' . $field, $displayUrl);
                 data_set($metadata, 'tmdb.' . $this->sourceMetadataKey($field), $ingestUrl);
 
                 continue;
@@ -294,7 +380,12 @@ class ContentImageIngestionService
         ];
     }
 
-    public function processSeriesDeferredSecondaryImages(Series $series): void
+    /**
+     * Ingest series poster/backdrop/banner/logo deferred on save.
+     *
+     * @return array{poster: bool, backdrop: bool, banner: bool, logo: bool}
+     */
+    public function processSeriesDeferredSecondaryImages(Series $series): array
     {
         $metadata = is_array($series->metadata) ? $series->metadata : [];
         $images = is_array($metadata['images'] ?? null) ? $metadata['images'] : [];
@@ -303,21 +394,47 @@ class ContentImageIngestionService
             'backdrop_url' => $series->backdrop_url,
         ];
         $changed = false;
+        $processed = [
+            'poster' => isset($images['poster']),
+            'backdrop' => isset($images['backdrop']),
+            'banner' => isset($images['banner']),
+            'logo' => isset($images['logo']),
+        ];
 
         foreach ([
+            'poster_url' => 'poster',
             'backdrop_url' => 'backdrop',
             'banner_url' => 'banner',
             'logo_url' => 'logo',
         ] as $field => $imageType) {
-            if (isset($images[$imageType])) {
+            $existingOriginal = data_get($images, "{$imageType}.original");
+
+            if (
+                isset($images[$imageType])
+                && is_string($existingOriginal)
+                && $this->managedPublicFileExists($existingOriginal)
+            ) {
+                $processed[$imageType] = true;
+
                 continue;
             }
 
-            $formUrl = data_get($metadata, 'tmdb.' . $field);
+            $formUrl = data_get($metadata, 'tmdb.' . $field) ?? $updates[$field] ?? null;
             $storedSource = data_get($metadata, 'tmdb.' . $this->sourceMetadataKey($field));
-            $ingestUrl = $this->resolveIngestUrl(
-                is_string($formUrl) ? $formUrl : '',
-                null,
+
+            if (
+                is_string($formUrl)
+                && $this->variantUrlBuilder->isManagedPublicUrl($formUrl)
+                && $this->managedPublicFileExists($formUrl)
+                && ! filled($storedSource)
+            ) {
+                $processed[$imageType] = true;
+
+                continue;
+            }
+
+            $ingestUrl = $this->resolveDeferredIngestUrl(
+                is_string($formUrl) ? $formUrl : null,
                 is_string($storedSource) ? $storedSource : null,
             );
 
@@ -329,10 +446,10 @@ class ContentImageIngestionService
                 'entity_type' => 'series',
                 'entity_id' => $series->id,
                 'image_type' => $imageType,
-                'is_primary' => false,
+                'is_primary' => $imageType === 'poster',
             ]);
 
-            $preferredUrl = $result['processed_url'] ?? (string) $formUrl;
+            $preferredUrl = $result['processed_url'] ?? (string) ($formUrl ?? $ingestUrl);
 
             if (in_array($field, ['poster_url', 'backdrop_url'], true)) {
                 $updates[$field] = $preferredUrl;
@@ -343,20 +460,21 @@ class ContentImageIngestionService
 
             if ($result['image']) {
                 $images[$imageType] = $result['image'];
+                $processed[$imageType] = true;
                 $changed = true;
             }
         }
 
-        if (! $changed) {
-            return;
+        if ($changed) {
+            $metadata['images'] = $images;
+            $series->update([
+                'poster_url' => $updates['poster_url'],
+                'backdrop_url' => $updates['backdrop_url'],
+                'metadata' => $metadata,
+            ]);
         }
 
-        $metadata['images'] = $images;
-        $series->update([
-            'poster_url' => $updates['poster_url'],
-            'backdrop_url' => $updates['backdrop_url'],
-            'metadata' => $metadata,
-        ]);
+        return $processed;
     }
 
     /**
@@ -732,7 +850,7 @@ class ContentImageIngestionService
             $result = $ingestResults[$jobKey];
 
             if ($result['success'] && filled($result['processed_url'])) {
-                $response[$field] = $result['processed_url'];
+                $response[$field] = $this->preferRelativeManagedPublicUrl($result['processed_url']);
                 $response['stats']['succeeded']++;
             } elseif (isset($jobs[$jobKey])) {
                 $response['stats']['failed']++;
@@ -750,8 +868,8 @@ class ContentImageIngestionService
             $result = $key !== null ? ($ingestResults[$key] ?? null) : null;
 
             if ($result && $result['success'] && filled($result['processed_url'])) {
-                $actor['profile_url'] = $result['processed_url'];
-                $actor['profile_source_url'] = $jobSources[$key] ?? $actor['profile_url'];
+                $actor['profile_url'] = $this->preferRelativeManagedPublicUrl($result['processed_url']);
+                $actor['profile_source_url'] = $jobSources[$key] ?? ($actor['profile_source_url'] ?? null);
 
                 if ($result['image']) {
                     $actor['profile_image'] = $result['image'];
@@ -780,7 +898,7 @@ class ContentImageIngestionService
             $posterResult = $ingestResults[$posterKey] ?? null;
 
             if ($posterResult && $posterResult['success'] && filled($posterResult['processed_url'])) {
-                $season['poster_url'] = $posterResult['processed_url'];
+                $season['poster_url'] = $this->preferRelativeManagedPublicUrl($posterResult['processed_url']);
                 $response['stats']['succeeded']++;
             } elseif (isset($jobs[$posterKey])) {
                 $response['stats']['failed']++;
@@ -798,7 +916,7 @@ class ContentImageIngestionService
                 $stillResult = $ingestResults[$stillKey] ?? null;
 
                 if ($stillResult && $stillResult['success'] && filled($stillResult['processed_url'])) {
-                    $episode['still_url'] = $stillResult['processed_url'];
+                    $episode['still_url'] = $this->preferRelativeManagedPublicUrl($stillResult['processed_url']);
                     $response['stats']['succeeded']++;
                 } elseif (isset($jobs[$stillKey])) {
                     $response['stats']['failed']++;
@@ -816,6 +934,35 @@ class ContentImageIngestionService
         return $response;
     }
 
+    /**
+     * Admin form fields expect relative managed paths (/images/...), even when
+     * CINEMA_IMAGE_PUBLIC_BASE_URL makes asset.original_public_url absolute.
+     */
+    private function preferRelativeManagedPublicUrl(?string $url): ?string
+    {
+        if (! filled($url)) {
+            return $url;
+        }
+
+        $url = trim((string) $url);
+
+        if (! $this->variantUrlBuilder->isManagedPublicUrl($url)) {
+            return $url;
+        }
+
+        $path = parse_url($url, PHP_URL_PATH);
+
+        if (is_string($path) && str_starts_with($path, '/images/')) {
+            return $path;
+        }
+
+        if (str_starts_with($url, '/images/')) {
+            return explode('?', $url, 2)[0];
+        }
+
+        return $url;
+    }
+
     private function shouldEagerIngestUrl(mixed $url): bool
     {
         if (! filled($url)) {
@@ -829,6 +976,35 @@ class ContentImageIngestionService
         }
 
         return $this->sourceNormalizer->isIngestible($url);
+    }
+
+    /**
+     * Resolve a remote image URL queued during save (source preferred over display URL).
+     * Unlike resolveIngestUrl(), matching form+source is expected before ingest and must not skip.
+     */
+    public function resolveDeferredIngestUrl(?string $formUrl, ?string $storedSourceUrl): ?string
+    {
+        $candidate = filled($storedSourceUrl)
+            ? trim((string) $storedSourceUrl)
+            : trim((string) ($formUrl ?? ''));
+
+        if ($candidate === '') {
+            return null;
+        }
+
+        if ($this->variantUrlBuilder->isManagedPublicUrl($candidate)) {
+            return null;
+        }
+
+        if (str_starts_with($candidate, '/media/') || str_contains($candidate, '/placeholders/')) {
+            return null;
+        }
+
+        if (! $this->sourceNormalizer->isIngestible($candidate)) {
+            return null;
+        }
+
+        return $candidate;
     }
 
     private function sourceMetadataKey(string $field): string

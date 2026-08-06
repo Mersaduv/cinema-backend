@@ -24,8 +24,8 @@ class AdminCatalogSummaryService
                 ->selectRaw('COUNT(*) as total')
                 ->selectRaw("SUM(CASE WHEN publish_status = 'draft' THEN 1 ELSE 0 END) as drafts")
                 ->selectRaw("SUM(CASE WHEN publish_status = 'published' THEN 1 ELSE 0 END) as published")
-                ->selectRaw("SUM(CASE WHEN processing_status IN ('queued', 'processing') THEN 1 ELSE 0 END) as processing")
-                ->selectRaw("SUM(CASE WHEN processing_status = 'ready' THEN 1 ELSE 0 END) as ready")
+                ->selectRaw("SUM(CASE WHEN processing_status IN ('queued', 'processing', 'pending') OR pipeline_status IN ('pending', 'running') THEN 1 ELSE 0 END) as processing")
+                ->selectRaw("SUM(CASE WHEN processing_status = 'ready' AND (pipeline_status IS NULL OR pipeline_status IN ('idle', 'completed')) THEN 1 ELSE 0 END) as ready")
                 ->first();
 
             return [

@@ -72,39 +72,81 @@ class TmdbService
     }
 
     /**
+     * Prefer ISO codes so admin taxonomy selects (and catalog filters) can match exactly.
+     * Display names stay available via reference options / Locale on the client.
+     *
      * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $spokenLanguages
      * @return array<int, string>
      */
     private function normalizeSpokenLanguagesFa(\Illuminate\Support\Collection $spokenLanguages): array
     {
-        $byIso = [];
-        $fallback = [];
+        $isos = [];
 
         foreach ($spokenLanguages as $item) {
-            if (!is_array($item)) {
+            if (! is_array($item)) {
                 continue;
             }
 
             $iso = strtolower(trim((string) ($item['iso_639_1'] ?? '')));
+            if ($iso === '' || isset($isos[$iso])) {
+                continue;
+            }
+
+            $isos[$iso] = $iso;
+        }
+
+        if ($isos !== []) {
+            return array_values($isos);
+        }
+
+        // Legacy fallback: display labels when ISO is missing from TMDB payload.
+        $fallback = [];
+        foreach ($spokenLanguages as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
             $name = $this->displayLanguageFa(
                 $item['iso_639_1'] ?? null,
                 $item['name'] ?? null,
                 $item['english_name'] ?? null,
             );
 
-            if (!$name) {
-                continue;
-            }
-
-            if ($iso !== '') {
-                $byIso[$iso] = $name;
+            if (! $name) {
                 continue;
             }
 
             $fallback[$name] = $name;
         }
 
-        return array_values(array_merge($byIso, $fallback));
+        return array_values($fallback);
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, array<string, mixed>|string>  $productionCountries
+     * @return array<int, string>
+     */
+    private function normalizeCountryCodes(\Illuminate\Support\Collection $productionCountries): array
+    {
+        $isos = [];
+
+        foreach ($productionCountries as $row) {
+            if (is_string($row)) {
+                $iso = strtoupper(trim($row));
+            } elseif (is_array($row)) {
+                $iso = strtoupper(trim((string) ($row['iso_3166_1'] ?? '')));
+            } else {
+                continue;
+            }
+
+            if ($iso === '' || isset($isos[$iso])) {
+                continue;
+            }
+
+            $isos[$iso] = $iso;
+        }
+
+        return array_values($isos);
     }
 
     public function search(string $query, ?string $language = null): array
@@ -292,14 +334,7 @@ class TmdbService
             'genres' => $this->resolveGenreLabels($genres->all(), 'movie', 'fa-IR'),
             'tags' => $keywords->pluck('name')->filter()->take(12)->values()->all(),
             'languages' => $this->normalizeSpokenLanguagesFa($spokenLanguages),
-            'countries' => $productionCountries
-                ->map(fn (array $row) => $this->displayCountryFa(
-                    $row['iso_3166_1'] ?? null,
-                    $row['name'] ?? null,
-                ))
-                ->filter()
-                ->values()
-                ->all(),
+            'countries' => $this->normalizeCountryCodes($productionCountries),
             'release_year' => $this->extractReleaseYear(
                 $payload['release_date'] ?? $fallbackPayload['release_date'] ?? null
             ),
@@ -598,11 +633,7 @@ class TmdbService
             'genres' => $this->resolveGenreLabels($genres->all(), 'tv', 'fa-IR'),
             'tags' => $keywords->pluck('name')->filter()->take(12)->values()->all(),
             'languages' => $this->normalizeSpokenLanguagesFa($languages),
-            'countries' => $countries
-                ->map(fn (string $code) => $this->displayCountryFa($code, $code))
-                ->filter()
-                ->values()
-                ->all(),
+            'countries' => $this->normalizeCountryCodes($countries),
             'release_year' => $this->extractReleaseYear(
                 $payload['first_air_date'] ?? $fallbackPayload['first_air_date'] ?? null,
             ),

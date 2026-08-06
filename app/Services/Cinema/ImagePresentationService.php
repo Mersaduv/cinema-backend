@@ -21,6 +21,7 @@ class ImagePresentationService
             data_get($metadata, 'images.poster.original'),
             data_get($metadata, 'tmdb.poster_url'),
             $this->resolveStoredPathUrl($posterPath),
+            data_get($metadata, 'tmdb.poster_source_url'),
         );
     }
 
@@ -29,6 +30,7 @@ class ImagePresentationService
         return $this->resolvePreferredUrl(
             data_get($metadata, 'images.backdrop.original'),
             data_get($metadata, 'tmdb.backdrop_url'),
+            data_get($metadata, 'tmdb.backdrop_source_url'),
         );
     }
 
@@ -38,6 +40,7 @@ class ImagePresentationService
             data_get($metadata, 'images.poster.original'),
             $posterUrl,
             data_get($metadata, 'tmdb.poster_url'),
+            data_get($metadata, 'tmdb.poster_source_url'),
         );
     }
 
@@ -47,6 +50,7 @@ class ImagePresentationService
             data_get($metadata, 'images.backdrop.original'),
             $backdropUrl,
             data_get($metadata, 'tmdb.backdrop_url'),
+            data_get($metadata, 'tmdb.backdrop_source_url'),
         );
     }
 
@@ -249,11 +253,20 @@ class ImagePresentationService
 
         $asset = $this->findReadyAssetByPublicUrl($url);
 
-        if (! $asset) {
-            return true;
+        if ($asset) {
+            return $this->assetFileExists($asset);
         }
 
-        return $this->assetFileExists($asset);
+        try {
+            $path = parse_url($url, PHP_URL_PATH);
+            $path = is_string($path) && $path !== '' ? $path : $url;
+            $path = explode('?', $path, 2)[0];
+            $physical = app(ImageStorageService::class)->toPhysicalPath($path);
+
+            return is_file($physical);
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     private function findReadyAssetByPublicUrl(string $url): ?ImageAsset
@@ -266,6 +279,25 @@ class ImagePresentationService
 
     private function assetFileExists(ImageAsset $asset): bool
     {
+        $publicUrl = (string) ($asset->original_public_url ?? '');
+
+        if ($publicUrl !== '') {
+            $physical = app(ImageStorageService::class)->ensureManagedFileOnCurrentRoot(
+                $publicUrl,
+                filled($asset->physical_storage_path) ? (string) $asset->physical_storage_path : null,
+            );
+
+            if ($physical !== null) {
+                if ((string) $asset->physical_storage_path !== $physical) {
+                    $asset->update(['physical_storage_path' => $physical]);
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
         return filled($asset->physical_storage_path) && is_file((string) $asset->physical_storage_path);
     }
 

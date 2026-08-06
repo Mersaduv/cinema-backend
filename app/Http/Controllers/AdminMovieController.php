@@ -576,6 +576,7 @@ class AdminMovieController extends Controller
         $synopsisFields = $this->synopsisHelper->localizeContentSynopsis(
             $validated['synopsis'] ?? null,
             data_get($existingMetadata, 'tmdb.synopsis_en'),
+            autoTranslate: false,
         );
         $manualDashUrl = filled($validated['dash_url'] ?? null)
             ? trim((string) $validated['dash_url'])
@@ -764,7 +765,7 @@ class AdminMovieController extends Controller
             $movie->id,
             $metadata,
             isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
-        )->afterResponse();
+        );
 
         $movie->update([
             'origin_country' => $primaryCountry,
@@ -836,7 +837,7 @@ class AdminMovieController extends Controller
             filled($previousSlug) && $previousSlug !== $movie->slug ? '/movies/'.$previousSlug : null,
         );
 
-        $openedPipeline = in_array($pipelineStatus, ['pending', 'running'], true);
+        $this->adminCatalogSummaryService->invalidateMovies();
 
         app(ContentChangeLogger::class)->log(
             'movie',
@@ -846,14 +847,12 @@ class AdminMovieController extends Controller
             array_keys($validated),
         );
 
+        $resolvedPipelineStatus = (string) ($movie->pipeline_status ?? $pipelineStatus);
+
         return response()->json([
             'success' => true,
-            'message' => $openedPipeline
-                ? 'محتوا در حال پردازش است. پس از تکمیل، منتشر خواهد شد.'
-                : ($shouldValidateHlsAsync
-                    ? 'Publication form saved. HLS manifest validation is running in the background.'
-                    : 'Publication form saved successfully.'),
-            'pipeline_status' => $pipelineStatus,
+            'message' => 'فرم ثبت شد. پردازش تصاویر، HLS و اعتبار بازیگران در صف انجام می‌شود.',
+            'pipeline_status' => $resolvedPipelineStatus,
             'data' => [
                 'movie' => $this->transformMovie($movie, true),
             ],
@@ -901,8 +900,7 @@ class AdminMovieController extends Controller
         }
 
         SyncMoviePersonCreditsJob::dispatch($movieId, $cast, $crew, $tmdbId)
-            ->onQueue('high')
-            ->afterResponse();
+            ->onQueue('high');
     }
 
     public function checkHlsExists(Request $request): JsonResponse
@@ -1392,10 +1390,7 @@ class AdminMovieController extends Controller
                     'production_status' => data_get($metadata, 'tmdb.production_status'),
                     'budget' => data_get($metadata, 'tmdb.budget'),
                     'revenue' => data_get($metadata, 'tmdb.revenue'),
-                    'genres' => $this->genreAlignmentService->align(
-                        data_get($metadata, 'tmdb.genre_refs', data_get($metadata, 'tmdb.genres', [])),
-                        'movie',
-                    )['labels'],
+                    'genres' => data_get($metadata, 'tmdb.genres', []),
                     'tags' => data_get($metadata, 'tmdb.tags', []),
                     'languages' => data_get($metadata, 'tmdb.languages', []),
                     'countries' => data_get($metadata, 'tmdb.countries', []),

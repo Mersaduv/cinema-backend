@@ -3,9 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\Movie;
-use App\Models\ProductionCountry;
 use App\Models\Series;
-use App\Models\SpokenLanguage;
+use App\Services\Cinema\AdminReferenceOptionsService;
 use App\Services\Cinema\EnsureTmdbReferenceDataService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Support\CatalogGenreManifest;
@@ -17,32 +16,20 @@ class FilterOptionsController extends Controller
     public function __construct(
         private readonly EnsureTmdbReferenceDataService $referenceData,
         private readonly GenreCatalogService $genreCatalogService,
+        private readonly AdminReferenceOptionsService $adminReferenceOptions,
     ) {}
-    /** @var array<int, string> */
-    private const POPULAR_COUNTRY_ISOS = [
-        'IR', 'US', 'GB', 'FR', 'DE', 'TR', 'IN', 'JP', 'KR', 'CN', 'CA', 'AU',
-        'IT', 'ES', 'RU', 'AE', 'SA', 'EG', 'BR', 'MX', 'NL', 'SE', 'CH', 'AT',
-    ];
 
     public function __invoke(): JsonResponse
     {
-        $payload = Cache::remember('filter_options', 86400, function (): array {
+        $payload = Cache::remember('filter_options_v2', 86400, function (): array {
             $this->referenceData->ensureCountriesLoaded();
 
             return [
                 'catalog_genres' => CatalogGenreManifest::orderedForApi('movie'),
                 'movie_genres' => CatalogGenreManifest::orderedForApi('movie'),
                 'tv_genres' => CatalogGenreManifest::orderedForApi('series'),
-                'countries' => $this->sortedCountries(),
-                'languages' => SpokenLanguage::query()
-                    ->orderBy('name')
-                    ->get()
-                    ->map(fn (SpokenLanguage $language) => [
-                        'iso' => $language->iso_639_1,
-                        'name' => $language->name,
-                    ])
-                    ->values()
-                    ->all(),
+                'countries' => $this->adminReferenceOptions->countries(),
+                'languages' => $this->adminReferenceOptions->languages(),
                 'release_years' => $this->releaseYears(),
                 'age_ratings' => ['G', 'PG', 'PG-13', 'R', 'NC-17', 'TV-MA', 'TV-14', 'TV-PG', 'TV-Y'],
                 'content_types' => [
@@ -64,33 +51,15 @@ class FilterOptionsController extends Controller
         });
 
         if ($payload['countries'] === []) {
-            Cache::forget('filter_options');
+            Cache::forget('filter_options_v2');
             $this->referenceData->ensureCountriesLoaded();
-            $payload['countries'] = $this->sortedCountries();
+            $this->adminReferenceOptions->invalidate();
+            $payload['countries'] = $this->adminReferenceOptions->countries();
         }
 
         return response()
             ->json(['success' => true, 'data' => $payload])
             ->header('Cache-Control', 'public, max-age=86400');
-    }
-
-    /**
-     * @return array<int, array<string, mixed>>
-     */
-    private function sortedCountries(): array
-    {
-        $rank = array_flip(self::POPULAR_COUNTRY_ISOS);
-
-        return ProductionCountry::query()
-            ->get()
-            ->sortBy(fn (ProductionCountry $country) => $rank[$country->iso_3166_1] ?? 9999)
-            ->values()
-            ->map(fn (ProductionCountry $country) => [
-                'iso' => $country->iso_3166_1,
-                'name' => $country->name,
-                'flag' => $country->flag_emoji,
-            ])
-            ->all();
     }
 
     /**

@@ -12,6 +12,7 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('cinema:publish-scheduled')->everyMinute();
+Schedule::command('cinema:recover-stuck-pipelines')->everyFiveMinutes();
 Schedule::command('cinema:cleanup-watch-progress')->daily();
 Schedule::command('cinema:cleanup-tv-activation-codes')->hourly();
 Schedule::command('cinema:sync-tmdb-reference-data')->weeklyOn(0, '00:00');

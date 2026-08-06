@@ -88,6 +88,39 @@ class ImageStorageService
         return $this->normalizeAbsolutePath($this->storageRoot() . $prefix . '/' . str_replace('/', DIRECTORY_SEPARATOR, $relative));
     }
 
+    /**
+     * Ensure a managed public image exists under the current storage root.
+     * If the DB still points at a legacy absolute path (e.g. D:\content after root moved to E:\content),
+     * copy the file into the active root and return the new physical path.
+     */
+    public function ensureManagedFileOnCurrentRoot(string $publicUrl, ?string $legacyPhysicalPath = null): ?string
+    {
+        try {
+            $path = parse_url($publicUrl, PHP_URL_PATH);
+            $path = is_string($path) && $path !== '' ? $path : $publicUrl;
+            $path = explode('?', $path, 2)[0];
+            $expected = $this->toPhysicalPath($path);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (is_file($expected)) {
+            return $expected;
+        }
+
+        $legacy = filled($legacyPhysicalPath) ? $this->normalizeAbsolutePath((string) $legacyPhysicalPath) : null;
+
+        if ($legacy && is_file($legacy) && strcasecmp($legacy, $expected) !== 0) {
+            File::ensureDirectoryExists(dirname($expected));
+
+            if (@copy($legacy, $expected) && is_file($expected)) {
+                return $expected;
+            }
+        }
+
+        return null;
+    }
+
     public function normalizePublicPath(string $path): string
     {
         $trimmed = trim($path);

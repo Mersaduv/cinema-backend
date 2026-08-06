@@ -3,6 +3,7 @@
 namespace App\Services\Cinema;
 
 use App\Jobs\RebuildCatalogCacheJob;
+use App\Jobs\RevalidateNextCatalogJob;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
@@ -75,6 +76,8 @@ class CatalogCacheService
     public function forgetSharedReferenceData(): void
     {
         Cache::forget('filter_options');
+        Cache::forget('filter_options_v2');
+        Cache::forget(AdminReferenceOptionsService::CACHE_KEY);
         Cache::forget('admin_reference_options_v1');
     }
 
@@ -99,9 +102,23 @@ class CatalogCacheService
      */
     public function scheduleRebuildAfterContentChange(array $nextPaths = []): void
     {
-        $this->invalidateImmediately();
-        RebuildCatalogCacheJob::dispatch(warm: true)->afterResponse();
-        app(NextPublicCacheRevalidationService::class)->revalidateCatalog($nextPaths);
+        // Generation bump is enough to invalidate generation-keyed list caches.
+        // Avoid synchronous LIKE deletes + Next HTTP during admin save.
+        $this->bumpCatalogGeneration();
+        Cache::forget('admin_movie_summary_v1');
+        Cache::forget('admin_series_summary_v1');
+        Cache::forget('filter_options');
+        Cache::forget('filter_options_v2');
+
+        $paths = array_values(array_filter(
+            $nextPaths,
+            fn ($path) => is_string($path) && filled($path),
+        ));
+
+        // Real queue — NOT afterResponse (Laravel afterResponse = dispatchSync on terminate,
+        // which blocks IIS/php-cgi until images/TMDB/revalidate finish).
+        RebuildCatalogCacheJob::dispatch(warm: true);
+        RevalidateNextCatalogJob::dispatch($paths);
     }
 
     private function forgetByPattern(string $pattern): void
