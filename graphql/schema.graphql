@@ -485,6 +485,7 @@ type PublicUser {
 type Review {
   id: ID!
   user: PublicUser!
+  viewer: PublicUser!
   rating: Int!
   body: String
   status: String

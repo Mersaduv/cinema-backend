@@ -3,7 +3,7 @@
 namespace App\Services\Cinema;
 
 use App\Models\TvActivationCode;
-use App\Models\User;
+use App\Models\Viewer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -30,9 +30,9 @@ class TvActivationService
     /**
      * @return array{code: string, token: string}|null
      */
-    public function activateForUser(string $code, User $user): ?array
+    public function activateForUser(string $code, Viewer $viewer): ?array
     {
-        return DB::transaction(function () use ($code, $user) {
+        return DB::transaction(function () use ($code, $viewer) {
             $normalized = strtoupper(trim($code));
             $record = TvActivationCode::query()
                 ->where('code', $normalized)
@@ -43,11 +43,11 @@ class TvActivationService
                 return null;
             }
 
-            $token = $user->createToken('tv_device');
+            $token = $viewer->createToken('tv_device');
             $plainToken = $token->plainTextToken;
 
             $record->update([
-                'user_id' => $user->id,
+                'viewer_id' => $viewer->id,
                 'personal_access_token_id' => $token->accessToken->id,
                 'activated_at' => now(),
             ]);
@@ -81,7 +81,7 @@ class TvActivationService
         $normalized = strtoupper(trim($code));
         $record = TvActivationCode::query()
             ->where('code', $normalized)
-            ->with('user.roles')
+            ->with('viewer')
             ->first();
 
         if (! $record) {
@@ -101,7 +101,8 @@ class TvActivationService
 
         return [
             'status' => 'activated',
-            'user' => $record->user,
+            'user' => $record->viewer,
+            'viewer' => $record->viewer,
         ];
     }
 

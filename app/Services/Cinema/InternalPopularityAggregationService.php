@@ -47,8 +47,8 @@ class InternalPopularityAggregationService
     {
         $rows = DB::table('watch_progress')
             ->select('media_id')
-            ->selectRaw('COUNT(DISTINCT CASE WHEN last_watched_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN COALESCE(user_id, device_id, id) END) AS plays_7d')
-            ->selectRaw('COUNT(DISTINCT CASE WHEN last_watched_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN COALESCE(user_id, device_id, id) END) AS plays_30d')
+            ->selectRaw('COUNT(DISTINCT CASE WHEN last_watched_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN COALESCE(viewer_id, device_id, id) END) AS plays_7d')
+            ->selectRaw('COUNT(DISTINCT CASE WHEN last_watched_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN COALESCE(viewer_id, device_id, id) END) AS plays_30d')
             ->where('media_type', $mediaType)
             ->where('last_watched_at', '>=', now()->subDays(30))
             ->groupBy('media_id')

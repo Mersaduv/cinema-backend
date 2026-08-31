@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ContentRequest;
-use App\Models\User;
+use App\Models\Viewer;
 use App\Services\Cinema\ContentRequestPresentationService;
 use App\Support\ContentRequestValidation;
 use Illuminate\Http\JsonResponse;
@@ -19,9 +19,9 @@ class PublicContentRequestController extends Controller
 
   public function index(Request $request): JsonResponse
   {
-    $user = $request->user();
+    $viewer = $request->user();
 
-    if (! $user instanceof User || $user->status === 'banned') {
+    if (! $viewer instanceof Viewer || $viewer->status === 'banned') {
       return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
     }
 
@@ -29,7 +29,7 @@ class PublicContentRequestController extends Controller
     $page = max(1, (int) $request->integer('page', 1));
 
     $paginator = ContentRequest::query()
-      ->forUser((int) $user->id)
+      ->forViewer((int) $viewer->id)
       ->when($request->filled('status'), function ($query) use ($request): void {
         $query->where('status', (string) $request->string('status'));
       })
@@ -40,7 +40,7 @@ class PublicContentRequestController extends Controller
       'success' => true,
       'data' => [
         'requests' => collect($paginator->items())
-          ->map(fn (ContentRequest $item) => $this->presentationService->transform($item, $user))
+          ->map(fn (ContentRequest $item) => $this->presentationService->transform($item, $viewer))
           ->values(),
         'pagination' => [
           'current_page' => $paginator->currentPage(),
@@ -54,9 +54,9 @@ class PublicContentRequestController extends Controller
 
   public function store(Request $request): JsonResponse
   {
-    $user = $request->user();
+    $viewer = $request->user();
 
-    if (! $user instanceof User || $user->status === 'banned') {
+    if (! $viewer instanceof Viewer || $viewer->status === 'banned') {
       return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
     }
 
@@ -83,7 +83,7 @@ class PublicContentRequestController extends Controller
     }
 
     $contentRequest = ContentRequest::query()->create([
-      'user_id' => $user->id,
+      'viewer_id' => $viewer->id,
       'title' => trim($validated['title']),
       'genre_slug' => $validated['genre_slug'],
       'genre_name' => $genreName,
@@ -95,7 +95,7 @@ class PublicContentRequestController extends Controller
       'success' => true,
       'message' => 'درخواست شما با موفقیت ثبت شد.',
       'data' => [
-        'request' => $this->presentationService->transform($contentRequest, $user),
+        'request' => $this->presentationService->transform($contentRequest, $viewer),
       ],
     ], 201);
   }

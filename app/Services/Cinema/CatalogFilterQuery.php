@@ -389,6 +389,9 @@ class CatalogFilterQuery
             'trending_fallback' => $this->applyTrendingFallbackSort($query, $table),
             'top_rated', 'imdb_desc' => $this->applyTopRatedSort($query, $table, $minVotes),
             'featured' => $query->orderByDesc('published_at')->orderByDesc('id'),
+            'views_desc' => $this->hasColumn($table, 'views_count')
+                ? $query->orderByDesc('views_count')->orderByDesc('id')
+                : $query->orderByDesc('published_at')->orderByDesc('id'),
             default => $query->orderByDesc('published_at')->orderByDesc('id'),
         };
     }

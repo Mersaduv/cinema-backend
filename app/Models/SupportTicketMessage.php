@@ -15,6 +15,7 @@ class SupportTicketMessage extends Model
         'support_ticket_id',
         'sender_role',
         'sender_user_id',
+        'sender_viewer_id',
         'body',
         'image_path',
         'image_url',
@@ -28,5 +29,10 @@ class SupportTicketMessage extends Model
     public function sender(): BelongsTo
     {
         return $this->belongsTo(User::class, 'sender_user_id');
+    }
+
+    public function senderViewer(): BelongsTo
+    {
+        return $this->belongsTo(Viewer::class, 'sender_viewer_id');
     }
 }

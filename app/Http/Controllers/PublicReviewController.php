@@ -5,14 +5,13 @@ namespace App\Http\Controllers;
 use App\Models\Movie;
 use App\Models\Review;
 use App\Models\Series;
-use App\Models\User;
+use App\Models\Viewer;
 use App\Services\Cinema\ReviewPresentationService;
 use App\Services\Cinema\ReviewRatingService;
 use App\Support\ReviewValidation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Validation\Rule;
 
 class PublicReviewController extends Controller
 {
@@ -42,9 +41,9 @@ class PublicReviewController extends Controller
 
     public function store(Request $request): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User || $user->status === 'banned') {
+        if (! $viewer instanceof Viewer || $viewer->status === 'banned') {
             return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
         }
 
@@ -56,7 +55,7 @@ class PublicReviewController extends Controller
         );
 
         $existing = Review::query()
-            ->where('user_id', $user->id)
+            ->where('viewer_id', $viewer->id)
             ->forContent($validated['reviewable_type'], $content->id)
             ->first();
 
@@ -64,38 +63,38 @@ class PublicReviewController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'شما قبلاً برای این عنوان نظر ثبت کرده‌اید.',
-                'data' => ['review' => $this->reviewPresentationService->transform($existing, $user)],
+                'data' => ['review' => $this->reviewPresentationService->transform($existing, $viewer)],
             ], 409);
         }
 
         $review = Review::query()->create([
             'reviewable_type' => $validated['reviewable_type'],
             'reviewable_id' => $content->id,
-            'user_id' => $user->id,
+            'viewer_id' => $viewer->id,
             'rating' => (int) $validated['rating'],
             'body' => ReviewValidation::sanitizeBody($validated['body']),
             'status' => Review::STATUS_PENDING,
             'is_approved' => false,
         ]);
 
-        $review->load('user');
+        $review->load('viewer');
 
         return response()->json([
             'success' => true,
             'message' => 'نظر شما ثبت شد و پس از تایید ادمین نمایش داده می‌شود.',
-            'data' => ['review' => $this->reviewPresentationService->transform($review, $user)],
+            'data' => ['review' => $this->reviewPresentationService->transform($review, $viewer)],
         ], 201);
     }
 
     public function update(Request $request, Review $review): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User) {
+        if (! $viewer instanceof Viewer) {
             return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
         }
 
-        if ((int) $review->user_id !== (int) $user->id) {
+        if ((int) $review->viewer_id !== (int) $viewer->id) {
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
@@ -111,24 +110,24 @@ class PublicReviewController extends Controller
             'moderated_at' => null,
         ]);
 
-        $review->load('user');
+        $review->load('viewer');
 
         return response()->json([
             'success' => true,
             'message' => 'نظر شما ویرایش شد و دوباره در صف تایید قرار گرفت.',
-            'data' => ['review' => $this->reviewPresentationService->transform($review, $user)],
+            'data' => ['review' => $this->reviewPresentationService->transform($review, $viewer)],
         ]);
     }
 
     public function destroy(Request $request, Review $review): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User) {
+        if (! $viewer instanceof Viewer) {
             return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
         }
 
-        if ((int) $review->user_id !== (int) $user->id) {
+        if ((int) $review->viewer_id !== (int) $viewer->id) {
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
@@ -154,7 +153,7 @@ class PublicReviewController extends Controller
         $query = Review::query()
             ->approved()
             ->forContent($type, $contentId)
-            ->with('user');
+            ->with('viewer');
 
         $query = match ($sort) {
             'oldest' => $query->orderBy('created_at'),
@@ -163,23 +162,23 @@ class PublicReviewController extends Controller
         };
 
         $paginator = $query->paginate($perPage, ['*'], 'page', $page);
-        $authUser = $request->user();
+        $authViewer = $request->user();
 
         $userReview = null;
-        if ($authUser instanceof User) {
+        if ($authViewer instanceof Viewer) {
             $own = Review::query()
                 ->forContent($type, $contentId)
-                ->where('user_id', $authUser->id)
-                ->with('user')
+                ->where('viewer_id', $authViewer->id)
+                ->with('viewer')
                 ->first();
-            $userReview = $own ? $this->reviewPresentationService->transform($own, $authUser) : null;
+            $userReview = $own ? $this->reviewPresentationService->transform($own, $authViewer) : null;
         }
 
         return response()->json([
             'success' => true,
             'data' => [
                 'reviews' => collect($paginator->items())
-                    ->map(fn (Review $review) => $this->reviewPresentationService->transform($review, $authUser))
+                    ->map(fn (Review $review) => $this->reviewPresentationService->transform($review, $authViewer instanceof Viewer ? $authViewer : null))
                     ->values(),
                 'summary' => $this->reviewRatingService->summaryForContent($type, $contentId),
                 'pagination' => [

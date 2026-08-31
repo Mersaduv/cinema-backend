@@ -23,7 +23,7 @@ class AdminReviewController extends Controller
         $perPage = min(max((int) $request->integer('per_page', 20), 1), 50);
 
         $reviews = Review::query()
-            ->with('user')
+            ->with('viewer')
             ->when($request->filled('reviewable_type'), function ($query) use ($request): void {
                 $query->where('reviewable_type', (string) $request->string('reviewable_type'));
             })
@@ -41,7 +41,7 @@ class AdminReviewController extends Controller
                 $query->where(function ($inner) use ($search): void {
                     $inner
                         ->where('body', 'like', '%' . $search . '%')
-                        ->orWhereHas('user', fn ($userQuery) => $userQuery->where('name', 'like', '%' . $search . '%'));
+                        ->orWhereHas('viewer', fn ($viewerQuery) => $viewerQuery->where('name', 'like', '%' . $search . '%'));
                 });
             })
             ->orderByDesc('created_at')
@@ -83,7 +83,7 @@ class AdminReviewController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'نظر تایید شد.',
-            'data' => ['review' => $this->reviewPresentationService->adminTransform($review->fresh('user'))],
+            'data' => ['review' => $this->reviewPresentationService->adminTransform($review->fresh('viewer'))],
         ]);
     }
 
@@ -107,7 +107,7 @@ class AdminReviewController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'نظر رد شد.',
-            'data' => ['review' => $this->reviewPresentationService->adminTransform($review->fresh('user'))],
+            'data' => ['review' => $this->reviewPresentationService->adminTransform($review->fresh('viewer'))],
         ]);
     }
 
@@ -150,7 +150,7 @@ class AdminReviewController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'نظر به‌روزرسانی شد.',
-            'data' => ['review' => $this->reviewPresentationService->adminTransform($review->fresh('user'))],
+            'data' => ['review' => $this->reviewPresentationService->adminTransform($review->fresh('viewer'))],
         ]);
     }
 

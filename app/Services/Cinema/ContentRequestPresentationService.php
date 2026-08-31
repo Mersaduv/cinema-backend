@@ -3,14 +3,14 @@
 namespace App\Services\Cinema;
 
 use App\Models\ContentRequest;
-use App\Models\User;
+use App\Models\Viewer;
 
 class ContentRequestPresentationService
 {
   /**
    * @return array<string, mixed>
    */
-  public function transform(ContentRequest $request, ?User $viewer = null): array
+  public function transform(ContentRequest $request, ?Viewer $viewer = null): array
   {
     return [
       'id' => $request->id,
@@ -23,7 +23,7 @@ class ContentRequestPresentationService
       'created_at' => $request->created_at?->toIso8601String(),
       'updated_at' => $request->updated_at?->toIso8601String(),
       'moderated_at' => $request->moderated_at?->toIso8601String(),
-      'is_own' => $viewer instanceof User && (int) $request->user_id === (int) $viewer->id,
+      'is_own' => $viewer instanceof Viewer && (int) $request->viewer_id === (int) $viewer->id,
     ];
   }
 
@@ -32,14 +32,14 @@ class ContentRequestPresentationService
    */
   public function adminTransform(ContentRequest $request): array
   {
-    $request->loadMissing('user');
+    $request->loadMissing('viewer');
 
     return [
       ...$this->transform($request),
-      'user' => $request->user ? [
-        'id' => $request->user->id,
-        'name' => $request->user->name,
-        'email' => $request->user->email,
+      'viewer' => $request->viewer ? [
+        'id' => $request->viewer->id,
+        'name' => $request->viewer->name,
+        'email' => $request->viewer->email,
       ] : null,
     ];
   }

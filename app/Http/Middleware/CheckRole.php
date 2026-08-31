@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\User;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -16,14 +17,16 @@ class CheckRole
      */
     public function handle(Request $request, Closure $next, string ...$roles): Response
     {
-        if (!$request->user()) {
+        $user = $request->user();
+
+        if (! $user instanceof User) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthenticated',
             ], 401);
         }
 
-        if (!$request->user()->hasAnyRole($roles)) {
+        if (! $user->hasAnyRole($roles)) {
             return response()->json([
                 'success' => false,
                 'message' => 'You do not have the required role',

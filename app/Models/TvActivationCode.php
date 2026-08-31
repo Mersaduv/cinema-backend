@@ -9,7 +9,7 @@ class TvActivationCode extends Model
 {
     protected $fillable = [
         'code',
-        'user_id',
+        'viewer_id',
         'personal_access_token_id',
         'device_label',
         'expires_at',
@@ -24,9 +24,15 @@ class TvActivationCode extends Model
         ];
     }
 
+    public function viewer(): BelongsTo
+    {
+        return $this->belongsTo(Viewer::class);
+    }
+
+    /** @deprecated Prefer viewer() — kept for transitional callers. */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(User::class);
+        return $this->viewer();
     }
 
     public function isExpired(): bool

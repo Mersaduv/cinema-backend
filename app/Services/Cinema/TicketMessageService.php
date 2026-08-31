@@ -5,6 +5,7 @@ namespace App\Services\Cinema;
 use App\Models\SupportTicket;
 use App\Models\SupportTicketMessage;
 use App\Models\User;
+use App\Models\Viewer;
 use App\Support\TicketValidation;
 use InvalidArgumentException;
 
@@ -18,7 +19,7 @@ class TicketMessageService
 
     public function createInitialUserMessage(
         SupportTicket $ticket,
-        User $user,
+        Viewer $viewer,
         string $body,
         ?string $imagePath = null,
         ?string $imageUrl = null,
@@ -26,7 +27,7 @@ class TicketMessageService
         return $this->persistMessage(
             $ticket,
             SupportTicketMessage::ROLE_USER,
-            $user,
+            $viewer,
             $body,
             $imagePath,
             $imageUrl,
@@ -35,7 +36,7 @@ class TicketMessageService
 
     public function createUserFollowUp(
         SupportTicket $ticket,
-        User $user,
+        Viewer $viewer,
         string $body,
         ?string $imagePath = null,
         ?string $imageUrl = null,
@@ -47,7 +48,7 @@ class TicketMessageService
         $message = $this->persistMessage(
             $ticket,
             SupportTicketMessage::ROLE_USER,
-            $user,
+            $viewer,
             $body,
             $imagePath,
             $imageUrl,
@@ -90,7 +91,7 @@ class TicketMessageService
     private function persistMessage(
         SupportTicket $ticket,
         string $senderRole,
-        ?User $sender,
+        User|Viewer|null $sender,
         string $body,
         ?string $imagePath = null,
         ?string $imageUrl = null,
@@ -104,14 +105,23 @@ class TicketMessageService
             $sanitizedBody = TicketValidation::normalizeMessageBody($body, $imagePath);
         }
 
-        return SupportTicketMessage::query()->create([
+        $payload = [
             'support_ticket_id' => $ticket->id,
             'sender_role' => $senderRole,
-            'sender_user_id' => $sender?->id,
             'body' => $sanitizedBody,
             'image_path' => $imagePath,
             'image_url' => $imageUrl,
-        ]);
+            'sender_user_id' => null,
+            'sender_viewer_id' => null,
+        ];
+
+        if ($sender instanceof Viewer) {
+            $payload['sender_viewer_id'] = $sender->id;
+        } elseif ($sender instanceof User) {
+            $payload['sender_user_id'] = $sender->id;
+        }
+
+        return SupportTicketMessage::query()->create($payload);
     }
 
     public function resolveMessageImageUrl(?string $imagePath, ?string $imageUrl): ?string

@@ -20,7 +20,7 @@ class AdminContentRequestController extends Controller
     $perPage = min(max((int) $request->integer('per_page', 20), 1), 50);
 
     $paginator = ContentRequest::query()
-      ->with('user')
+      ->with('viewer')
       ->when($request->filled('status'), function ($query) use ($request): void {
         $query->where('status', (string) $request->string('status'));
       })
@@ -30,7 +30,7 @@ class AdminContentRequestController extends Controller
           $inner
             ->where('title', 'like', '%' . $search . '%')
             ->orWhere('description', 'like', '%' . $search . '%')
-            ->orWhereHas('user', fn ($userQuery) => $userQuery
+            ->orWhereHas('viewer', fn ($viewerQuery) => $viewerQuery
               ->where('name', 'like', '%' . $search . '%')
               ->orWhere('email', 'like', '%' . $search . '%'));
         });
@@ -89,7 +89,7 @@ class AdminContentRequestController extends Controller
       'success' => true,
       'message' => 'درخواست به‌روزرسانی شد.',
       'data' => [
-        'request' => $this->presentationService->adminTransform($contentRequest->fresh('user')),
+        'request' => $this->presentationService->adminTransform($contentRequest->fresh('viewer')),
       ],
     ]);
   }

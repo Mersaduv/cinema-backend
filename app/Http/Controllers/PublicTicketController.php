@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\SupportTicket;
-use App\Models\User;
+use App\Models\Viewer;
 use App\Services\Cinema\TicketAttachmentService;
 use App\Services\Cinema\TicketLifecycleService;
 use App\Services\Cinema\TicketMessageService;
@@ -41,9 +41,9 @@ class PublicTicketController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User || $user->status === 'banned') {
+        if (! $viewer instanceof Viewer || $viewer->status === 'banned') {
             return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
         }
 
@@ -51,24 +51,24 @@ class PublicTicketController extends Controller
         $page = max(1, (int) $request->integer('page', 1));
 
         $paginator = SupportTicket::query()
-            ->forUser((int) $user->id)
+            ->forViewer((int) $viewer->id)
             ->with('latestMessage')
             ->withCount('messages')
             ->orderByDesc('created_at')
             ->paginate($perPage, ['*'], 'page', $page);
 
         $waiting = SupportTicket::query()
-            ->forUser((int) $user->id)
+            ->forViewer((int) $viewer->id)
             ->where('status', SupportTicket::STATUS_WAITING)
             ->count();
 
         $answered = SupportTicket::query()
-            ->forUser((int) $user->id)
+            ->forViewer((int) $viewer->id)
             ->where('status', SupportTicket::STATUS_ANSWERED)
             ->count();
 
         $closed = SupportTicket::query()
-            ->forUser((int) $user->id)
+            ->forViewer((int) $viewer->id)
             ->where('status', SupportTicket::STATUS_CLOSED)
             ->count();
 
@@ -76,7 +76,7 @@ class PublicTicketController extends Controller
             'success' => true,
             'data' => [
                 'tickets' => collect($paginator->items())
-                    ->map(fn (SupportTicket $ticket) => $this->presentationService->listTransform($ticket, $user))
+                    ->map(fn (SupportTicket $ticket) => $this->presentationService->listTransform($ticket, $viewer))
                     ->values(),
                 'summary' => [
                     'waiting' => $waiting,
@@ -95,9 +95,9 @@ class PublicTicketController extends Controller
 
     public function show(Request $request, SupportTicket $supportTicket): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User || (int) $supportTicket->user_id !== (int) $user->id) {
+        if (! $viewer instanceof Viewer || (int) $supportTicket->viewer_id !== (int) $viewer->id) {
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
@@ -106,7 +106,7 @@ class PublicTicketController extends Controller
             'data' => [
                 'ticket' => $this->presentationService->transform(
                     $supportTicket->load(['messages' => fn ($query) => $query->orderBy('created_at')]),
-                    $user,
+                    $viewer,
                 ),
             ],
         ]);
@@ -114,9 +114,9 @@ class PublicTicketController extends Controller
 
     public function store(Request $request): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User || $user->status === 'banned') {
+        if (! $viewer instanceof Viewer || $viewer->status === 'banned') {
             return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
         }
 
@@ -153,7 +153,7 @@ class PublicTicketController extends Controller
             : null;
 
         $ticket = SupportTicket::query()->create([
-            'user_id' => $user->id,
+            'viewer_id' => $viewer->id,
             'category' => $validated['category'],
             'category_label' => $categoryLabel,
             'description' => TicketValidation::sanitizeDescription($validated['description']),
@@ -164,7 +164,7 @@ class PublicTicketController extends Controller
 
         $this->ticketMessageService->createInitialUserMessage(
             $ticket,
-            $user,
+            $viewer,
             $ticket->description,
             $imagePath,
             $imageUrl,
@@ -174,16 +174,16 @@ class PublicTicketController extends Controller
             'success' => true,
             'message' => 'تیکت شما با موفقیت ثبت شد.',
             'data' => [
-                'ticket' => $this->presentationService->transform($ticket->fresh('messages'), $user),
+                'ticket' => $this->presentationService->transform($ticket->fresh('messages'), $viewer),
             ],
         ], 201);
     }
 
     public function storeMessage(Request $request, SupportTicket $supportTicket): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User || (int) $supportTicket->user_id !== (int) $user->id) {
+        if (! $viewer instanceof Viewer || (int) $supportTicket->viewer_id !== (int) $viewer->id) {
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
@@ -218,7 +218,7 @@ class PublicTicketController extends Controller
         try {
             $this->ticketMessageService->createUserFollowUp(
                 $supportTicket,
-                $user,
+                $viewer,
                 $body,
                 $imagePath,
                 $imageUrl,
@@ -236,7 +236,7 @@ class PublicTicketController extends Controller
             'data' => [
                 'ticket' => $this->presentationService->transform(
                     $supportTicket->fresh(['messages' => fn ($query) => $query->orderBy('created_at')]),
-                    $user,
+                    $viewer,
                 ),
             ],
         ]);
@@ -244,9 +244,9 @@ class PublicTicketController extends Controller
 
     public function close(Request $request, SupportTicket $supportTicket): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User || (int) $supportTicket->user_id !== (int) $user->id) {
+        if (! $viewer instanceof Viewer || (int) $supportTicket->viewer_id !== (int) $viewer->id) {
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
@@ -265,7 +265,7 @@ class PublicTicketController extends Controller
             'success' => true,
             'message' => 'تیکت بسته شد.',
             'data' => [
-                'ticket' => $this->presentationService->transform($supportTicket->fresh(), $user),
+                'ticket' => $this->presentationService->transform($supportTicket->fresh(), $viewer),
             ],
         ]);
     }

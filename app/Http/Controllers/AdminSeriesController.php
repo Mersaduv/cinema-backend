@@ -1450,6 +1450,7 @@ class AdminSeriesController extends Controller
             'updated_at' => $series->updated_at?->toISOString(),
             'created_by' => $series->creator?->only(['id', 'name', 'email']),
             'has_admin_notes' => filled(data_get($metadata, 'admin_notes')),
+            'views_count' => (int) ($series->views_count ?? 0),
         ];
     }
 
@@ -1693,6 +1694,7 @@ class AdminSeriesController extends Controller
                 'admin_notes' => data_get($metadata, 'admin_notes'),
             ],
             'admin_notes' => data_get($metadata, 'admin_notes'),
+            'views_count' => (int) ($series->views_count ?? 0),
             'created_at' => $series->created_at?->toISOString(),
             'updated_at' => $series->updated_at?->toISOString(),
             'created_by' => $series->creator?->only(['id', 'name', 'email']),

@@ -48,6 +48,12 @@ class AppServiceProvider extends ServiceProvider
             );
         });
 
+        RateLimiter::for('content-views', function (Request $request) {
+            return Limit::perMinute(30)->by(
+                $request->user()?->id ?? $request->ip()
+            );
+        });
+
         Review::observe(ReviewObserver::class);
         Movie::observe(MovieObserver::class);
         Series::observe(SeriesObserver::class);

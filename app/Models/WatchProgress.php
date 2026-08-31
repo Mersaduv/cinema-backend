@@ -12,7 +12,7 @@ class WatchProgress extends Model
     protected $table = 'watch_progress';
 
     protected $fillable = [
-        'user_id',
+        'viewer_id',
         'media_type',
         'media_id',
         'episode_key',
@@ -43,9 +43,15 @@ class WatchProgress extends Model
         ];
     }
 
+    public function viewer(): BelongsTo
+    {
+        return $this->belongsTo(Viewer::class);
+    }
+
+    /** @deprecated Prefer viewer() — kept for transitional callers. */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(User::class);
+        return $this->viewer();
     }
 
     public function scopeForMedia(

@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\User;
+use App\Models\Viewer;
 use App\Services\Cinema\TicketAttachmentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,9 +17,9 @@ class UploadController extends Controller
 
     public function store(Request $request): JsonResponse
     {
-        $user = $request->user();
+        $viewer = $request->user();
 
-        if (! $user instanceof User || $user->status === 'banned') {
+        if (! $viewer instanceof Viewer || $viewer->status === 'banned') {
             return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
         }
 

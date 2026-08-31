@@ -17,7 +17,7 @@ class Review extends Model
     protected $fillable = [
         'reviewable_type',
         'reviewable_id',
-        'user_id',
+        'viewer_id',
         'rating',
         'body',
         'body_original',
@@ -43,9 +43,15 @@ class Review extends Model
         });
     }
 
+    public function viewer(): BelongsTo
+    {
+        return $this->belongsTo(Viewer::class);
+    }
+
+    /** @deprecated Prefer viewer() — kept for transitional callers. */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(User::class);
+        return $this->viewer();
     }
 
     public function scopeApproved(Builder $query): Builder

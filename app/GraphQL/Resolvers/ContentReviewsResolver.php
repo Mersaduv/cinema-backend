@@ -4,8 +4,7 @@ namespace App\GraphQL\Resolvers;
 
 use App\Models\Movie;
 use App\Models\Review;
-use App\Models\Series;
-use App\Models\User;
+use App\Models\Viewer;
 use App\Services\Cinema\ReviewPresentationService;
 use App\Services\Cinema\ReviewRatingService;
 use GraphQL\Type\Definition\ResolveInfo;
@@ -69,7 +68,7 @@ class ContentReviewsResolver
         $query = Review::query()
             ->approved()
             ->forContent($type, $contentId)
-            ->with('user');
+            ->with('viewer');
 
         $query = match ($sort) {
             'OLDEST' => $query->orderBy('created_at'),
@@ -78,23 +77,24 @@ class ContentReviewsResolver
         };
 
         $paginator = $query->paginate($perPage, ['*'], 'page', $page);
-        $authUser = $context->user();
+        $authViewer = $context->user();
+        $viewer = $authViewer instanceof Viewer ? $authViewer : null;
 
         $userReview = null;
-        if ($authUser instanceof User) {
+        if ($viewer !== null) {
             $own = Review::query()
                 ->forContent($type, $contentId)
-                ->where('user_id', $authUser->id)
-                ->with('user')
+                ->where('viewer_id', $viewer->id)
+                ->with('viewer')
                 ->first();
-            $userReview = $own ? $this->reviewPresentationService->transform($own, $authUser) : null;
+            $userReview = $own ? $this->reviewPresentationService->transform($own, $viewer) : null;
         }
 
         $summary = $this->reviewRatingService->summaryForContent($type, $contentId);
 
         return [
             'reviews' => collect($paginator->items())
-                ->map(fn (Review $review) => $this->reviewPresentationService->transform($review, $authUser))
+                ->map(fn (Review $review) => $this->reviewPresentationService->transform($review, $viewer))
                 ->values()
                 ->all(),
             'summary' => [

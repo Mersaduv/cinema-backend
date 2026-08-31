@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\User;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -16,7 +17,9 @@ class CheckPermission
      */
     public function handle(Request $request, Closure $next, string ...$permissions): Response
     {
-        if (!$request->user()) {
+        $user = $request->user();
+
+        if (! $user instanceof User) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthenticated',
@@ -24,14 +27,14 @@ class CheckPermission
         }
 
         foreach ($permissions as $permission) {
-            if (!$request->user()->hasPermission($permission)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'You do not have the required permission: ' . $permission,
-                ], 403);
+            if ($user->hasPermission($permission)) {
+                return $next($request);
             }
         }
 
-        return $next($request);
+        return response()->json([
+            'success' => false,
+            'message' => 'You do not have the required permission',
+        ], 403);
     }
 }

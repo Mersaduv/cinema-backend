@@ -17,7 +17,7 @@ class ContentRequest extends Model
     public const STATUS_REJECTED = 'rejected';
 
     protected $fillable = [
-        'user_id',
+        'viewer_id',
         'title',
         'genre_slug',
         'genre_name',
@@ -34,13 +34,19 @@ class ContentRequest extends Model
         ];
     }
 
-    public function user(): BelongsTo
+    public function viewer(): BelongsTo
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(Viewer::class);
     }
 
-    public function scopeForUser(Builder $query, int $userId): Builder
+    /** @deprecated Prefer viewer() — kept for transitional callers. */
+    public function user(): BelongsTo
     {
-        return $query->where('user_id', $userId);
+        return $this->viewer();
+    }
+
+    public function scopeForViewer(Builder $query, int $viewerId): Builder
+    {
+        return $query->where('viewer_id', $viewerId);
     }
 }

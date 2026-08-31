@@ -4,7 +4,7 @@ namespace App\Services\Cinema;
 
 use App\Models\SupportTicket;
 use App\Models\SupportTicketMessage;
-use App\Models\User;
+use App\Models\Viewer;
 use App\Support\TicketValidation;
 
 class TicketPresentationService
@@ -19,7 +19,7 @@ class TicketPresentationService
     /**
      * @return array<string, mixed>
      */
-    public function listTransform(SupportTicket $ticket, ?User $viewer = null): array
+    public function listTransform(SupportTicket $ticket, ?Viewer $viewer = null): array
     {
         $ticket->loadMissing('latestMessage');
 
@@ -44,14 +44,14 @@ class TicketPresentationService
             'created_at' => $ticket->created_at?->toIso8601String(),
             'answered_at' => $ticket->answered_at?->toIso8601String(),
             'closed_at' => $ticket->closed_at?->toIso8601String(),
-            'is_own' => $viewer instanceof User && (int) $ticket->user_id === (int) $viewer->id,
+            'is_own' => $viewer instanceof Viewer && (int) $ticket->viewer_id === (int) $viewer->id,
         ];
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function transform(SupportTicket $ticket, ?User $viewer = null): array
+    public function transform(SupportTicket $ticket, ?Viewer $viewer = null): array
     {
         $ticket->loadMissing(['messages' => fn ($query) => $query->orderBy('created_at')]);
 
@@ -76,7 +76,7 @@ class TicketPresentationService
             'updated_at' => $ticket->updated_at?->toIso8601String(),
             'answered_at' => $ticket->answered_at?->toIso8601String(),
             'closed_at' => $ticket->closed_at?->toIso8601String(),
-            'is_own' => $viewer instanceof User && (int) $ticket->user_id === (int) $viewer->id,
+            'is_own' => $viewer instanceof Viewer && (int) $ticket->viewer_id === (int) $viewer->id,
         ];
     }
 
@@ -103,14 +103,14 @@ class TicketPresentationService
      */
     public function adminListTransform(SupportTicket $ticket): array
     {
-        $ticket->loadMissing('user');
+        $ticket->loadMissing('viewer');
 
         return [
             ...$this->listTransform($ticket),
-            'user' => $ticket->user ? [
-                'id' => $ticket->user->id,
-                'name' => $ticket->user->name,
-                'email' => $ticket->user->email,
+            'viewer' => $ticket->viewer ? [
+                'id' => $ticket->viewer->id,
+                'name' => $ticket->viewer->name,
+                'email' => $ticket->viewer->email,
             ] : null,
         ];
     }
@@ -120,14 +120,14 @@ class TicketPresentationService
      */
     public function adminTransform(SupportTicket $ticket): array
     {
-        $ticket->loadMissing('user');
+        $ticket->loadMissing('viewer');
 
         return [
             ...$this->transform($ticket),
-            'user' => $ticket->user ? [
-                'id' => $ticket->user->id,
-                'name' => $ticket->user->name,
-                'email' => $ticket->user->email,
+            'viewer' => $ticket->viewer ? [
+                'id' => $ticket->viewer->id,
+                'name' => $ticket->viewer->name,
+                'email' => $ticket->viewer->email,
             ] : null,
         ];
     }

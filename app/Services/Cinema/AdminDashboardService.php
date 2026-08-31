@@ -7,6 +7,7 @@ use App\Models\ContentRequest;
 use App\Models\Review;
 use App\Models\SupportTicket;
 use App\Models\User;
+use App\Models\Viewer;
 use Illuminate\Support\Facades\Cache;
 
 class AdminDashboardService
@@ -35,6 +36,7 @@ class AdminDashboardService
                 'series' => $this->catalogSummary->seriesSummary(),
                 'collections' => Collection::query()->count(),
                 'users' => User::query()->count(),
+                'viewers' => Viewer::query()->count(),
                 'reviews_pending' => Review::query()
                     ->where('status', Review::STATUS_PENDING)
                     ->count(),

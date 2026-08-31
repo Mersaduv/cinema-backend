@@ -17,7 +17,7 @@ class SupportTicket extends Model
     public const STATUS_CLOSED = 'closed';
 
     protected $fillable = [
-        'user_id',
+        'viewer_id',
         'category',
         'category_label',
         'description',
@@ -37,9 +37,15 @@ class SupportTicket extends Model
         ];
     }
 
+    public function viewer(): BelongsTo
+    {
+        return $this->belongsTo(Viewer::class);
+    }
+
+    /** @deprecated Prefer viewer() — kept for transitional callers. */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(User::class);
+        return $this->viewer();
     }
 
     public function messages(): HasMany
@@ -52,8 +58,8 @@ class SupportTicket extends Model
         return $this->hasOne(SupportTicketMessage::class)->latestOfMany();
     }
 
-    public function scopeForUser(Builder $query, int $userId): Builder
+    public function scopeForViewer(Builder $query, int $viewerId): Builder
     {
-        return $query->where('user_id', $userId);
+        return $query->where('viewer_id', $viewerId);
     }
 }

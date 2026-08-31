@@ -5,7 +5,7 @@ namespace App\GraphQL\Mutations;
 use App\Models\Movie;
 use App\Models\Review;
 use App\Models\Series;
-use App\Models\User;
+use App\Models\Viewer;
 use App\Services\Cinema\ReviewPresentationService;
 use App\Support\ReviewValidation;
 use GraphQL\Error\Error;
@@ -25,7 +25,7 @@ class ReviewMutations
      */
     public function submitReview(mixed $root, array $args, GraphQLContext $context): array
     {
-        $user = $this->authUser($context);
+        $viewer = $this->authViewer($context);
 
         $validated = Validator::make($args, [
             'slug' => ['required', 'string', 'max:255'],
@@ -40,7 +40,7 @@ class ReviewMutations
         );
 
         $existing = Review::query()
-            ->where('user_id', $user->id)
+            ->where('viewer_id', $viewer->id)
             ->forContent($validated['reviewable_type'], $content->id)
             ->first();
 
@@ -51,16 +51,16 @@ class ReviewMutations
         $review = Review::query()->create([
             'reviewable_type' => $validated['reviewable_type'],
             'reviewable_id' => $content->id,
-            'user_id' => $user->id,
+            'viewer_id' => $viewer->id,
             'rating' => (int) $validated['rating'],
             'body' => ReviewValidation::sanitizeBody($validated['body']),
             'status' => Review::STATUS_PENDING,
             'is_approved' => false,
         ]);
 
-        $review->load('user');
+        $review->load('viewer');
 
-        return $this->reviewPresentationService->transform($review, $user);
+        return $this->reviewPresentationService->transform($review, $viewer);
     }
 
     /**
@@ -69,11 +69,11 @@ class ReviewMutations
      */
     public function updateReview(mixed $root, array $args, GraphQLContext $context): array
     {
-        $user = $this->authUser($context);
+        $viewer = $this->authViewer($context);
 
-        $review = Review::query()->with('user')->findOrFail((int) $args['id']);
+        $review = Review::query()->with('viewer')->findOrFail((int) $args['id']);
 
-        if ((int) $review->user_id !== (int) $user->id) {
+        if ((int) $review->viewer_id !== (int) $viewer->id) {
             throw new Error('دسترسی مجاز نیست.');
         }
 
@@ -92,15 +92,15 @@ class ReviewMutations
             'moderated_at' => null,
         ]);
 
-        return $this->reviewPresentationService->transform($review->fresh('user'), $user);
+        return $this->reviewPresentationService->transform($review->fresh('viewer'), $viewer);
     }
 
     public function deleteReview(mixed $root, array $args, GraphQLContext $context): bool
     {
-        $user = $this->authUser($context);
+        $viewer = $this->authViewer($context);
         $review = Review::query()->findOrFail((int) $args['id']);
 
-        if ((int) $review->user_id !== (int) $user->id) {
+        if ((int) $review->viewer_id !== (int) $viewer->id) {
             throw new Error('دسترسی مجاز نیست.');
         }
 
@@ -109,15 +109,15 @@ class ReviewMutations
         return true;
     }
 
-    private function authUser(GraphQLContext $context): User
+    private function authViewer(GraphQLContext $context): Viewer
     {
-        $user = $context->user();
+        $viewer = $context->user();
 
-        if (! $user instanceof User || $user->status === 'banned') {
+        if (! $viewer instanceof Viewer || $viewer->status === 'banned') {
             throw new Error('برای ثبت نظر باید وارد حساب شوید.');
         }
 
-        return $user;
+        return $viewer;
     }
 
     private function resolvePublishedContent(string $type, string $slug): Movie|Series

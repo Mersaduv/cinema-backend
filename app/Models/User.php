@@ -55,6 +55,11 @@ class User extends Authenticatable
         return $this->belongsToMany(Role::class);
     }
 
+    public function permissions(): BelongsToMany
+    {
+        return $this->belongsToMany(Permission::class);
+    }
+
     public function hasRole(string $role): bool
     {
         return $this->roles()->where('slug', $role)->exists();
@@ -62,9 +67,22 @@ class User extends Authenticatable
 
     public function hasPermission(string $permission): bool
     {
+        if ($this->hasDirectPermissions()) {
+            return $this->permissions()->where('slug', $permission)->exists();
+        }
+
         return $this->roles()->whereHas('permissions', function ($query) use ($permission) {
             $query->where('slug', $permission);
         })->exists();
+    }
+
+    public function hasDirectPermissions(): bool
+    {
+        if ($this->relationLoaded('permissions')) {
+            return $this->permissions->isNotEmpty();
+        }
+
+        return $this->permissions()->exists();
     }
 
     public function hasAnyRole(array $roles): bool

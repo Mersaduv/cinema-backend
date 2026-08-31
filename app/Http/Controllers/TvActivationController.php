@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Viewer;
 use App\Services\Cinema\TvActivationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -66,7 +67,7 @@ class TvActivationController extends Controller
     }
 
     /**
-     * Logged-in user confirms a TV code from phone/desktop.
+     * Logged-in viewer confirms a TV code from phone/desktop.
      */
     public function confirm(Request $request): JsonResponse
     {
@@ -82,8 +83,16 @@ class TvActivationController extends Controller
             ], 422);
         }
 
-        $user = $request->user();
-        $result = $this->activationService->activateForUser($request->string('code')->toString(), $user);
+        $viewer = $request->user();
+
+        if (! $viewer instanceof Viewer) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized.',
+            ], 401);
+        }
+
+        $result = $this->activationService->activateForUser($request->string('code')->toString(), $viewer);
 
         if (! $result) {
             return response()->json([

@@ -27,7 +27,7 @@ class AdminTicketController extends Controller
         $perPage = min(max((int) $request->integer('per_page', 20), 1), 50);
 
         $paginator = SupportTicket::query()
-            ->with(['user', 'latestMessage'])
+            ->with(['viewer', 'latestMessage'])
             ->withCount('messages')
             ->when($request->filled('status'), function ($query) use ($request): void {
                 $query->where('status', (string) $request->string('status'));
@@ -37,7 +37,7 @@ class AdminTicketController extends Controller
                 $query->where(function ($inner) use ($search): void {
                     $inner
                         ->where('description', 'like', '%' . $search . '%')
-                        ->orWhereHas('user', fn ($userQuery) => $userQuery
+                        ->orWhereHas('viewer', fn ($viewerQuery) => $viewerQuery
                             ->where('name', 'like', '%' . $search . '%')
                             ->orWhere('email', 'like', '%' . $search . '%'));
                 });
@@ -68,7 +68,7 @@ class AdminTicketController extends Controller
             'data' => [
                 'ticket' => $this->presentationService->adminTransform(
                     $supportTicket->load([
-                        'user',
+                        'viewer',
                         'messages' => fn ($query) => $query->orderBy('created_at'),
                     ]),
                 ),
@@ -152,7 +152,7 @@ class AdminTicketController extends Controller
             'message' => 'تیکت به‌روزرسانی شد.',
             'data' => [
                 'ticket' => $this->presentationService->adminTransform(
-                    $supportTicket->fresh(['user', 'messages' => fn ($query) => $query->orderBy('created_at')]),
+                    $supportTicket->fresh(['viewer', 'messages' => fn ($query) => $query->orderBy('created_at')]),
                 ),
             ],
         ]);

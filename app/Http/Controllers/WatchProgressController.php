@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Movie;
 use App\Models\Series;
 use App\Models\SeriesEpisode;
-use App\Models\User;
+use App\Models\Viewer;
 use App\Models\WatchProgress;
 use App\Services\Cinema\WatchProgressLifecycleService;
 use Illuminate\Http\JsonResponse;
@@ -42,7 +42,7 @@ class WatchProgressController extends Controller
         $this->watchProgressLifecycle->purgeUnplayable();
 
         $query = WatchProgress::query()
-            ->where('user_id', $user->id)
+            ->where('viewer_id', $user->id)
             ->playable()
             ->orderByDesc('last_watched_at');
 
@@ -72,7 +72,7 @@ class WatchProgressController extends Controller
         $episodeId = $request->query('episodeId');
 
         $row = WatchProgress::query()
-            ->where('user_id', $user->id)
+            ->where('viewer_id', $user->id)
             ->playable()
             ->forMedia($mediaId, is_string($episodeId) ? $episodeId : null)
             ->first();
@@ -119,7 +119,7 @@ class WatchProgressController extends Controller
 
         $row = WatchProgress::query()->updateOrCreate(
             [
-                'user_id' => $user->id,
+                'viewer_id' => $user->id,
                 'media_id' => (int) $validated['mediaId'],
                 'episode_key' => $episodeKey,
             ],
@@ -193,7 +193,7 @@ class WatchProgressController extends Controller
 
             $row = WatchProgress::query()->updateOrCreate(
                 [
-                    'user_id' => $user->id,
+                    'viewer_id' => $user->id,
                     'media_id' => (int) $record['mediaId'],
                     'episode_key' => $episodeKey,
                 ],
@@ -231,18 +231,18 @@ class WatchProgressController extends Controller
         $episodeId = $request->query('episodeId');
 
         WatchProgress::query()
-            ->where('user_id', $user->id)
+            ->where('viewer_id', $user->id)
             ->forMedia($mediaId, is_string($episodeId) ? $episodeId : null)
             ->delete();
 
         return response()->json(['success' => true]);
     }
 
-    private function resolveUser(Request $request): ?User
+    private function resolveUser(Request $request): ?Viewer
     {
         $user = $request->user();
 
-        return $user instanceof User && $user->status !== 'banned' ? $user : null;
+        return $user instanceof Viewer && $user->status !== 'banned' ? $user : null;
     }
 
     /**
