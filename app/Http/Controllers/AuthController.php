@@ -5,8 +5,10 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\Viewer;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 
@@ -14,6 +16,13 @@ class AuthController extends Controller
 {
     public function register(Request $request)
     {
+        if (! $this->passesRecaptcha($request)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'CAPTCHA validation failed.',
+            ], 422);
+        }
+
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
             'email' => [
@@ -25,6 +34,7 @@ class AuthController extends Controller
                 Rule::unique('users', 'email'),
             ],
             'password' => 'required|string|min:8|confirmed',
+            'captcha_token' => $this->recaptchaTokenRules(),
         ]);
 
         if ($validator->fails()) {
@@ -70,6 +80,7 @@ class AuthController extends Controller
         $validator = Validator::make($request->all(), [
             'email' => 'required|email',
             'password' => 'required',
+            'captcha_token' => $this->recaptchaTokenRules(),
         ]);
 
         if ($validator->fails()) {
@@ -77,6 +88,13 @@ class AuthController extends Controller
                 'success' => false,
                 'message' => 'Validation error',
                 'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        if (! $this->passesRecaptcha($request)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'CAPTCHA validation failed.',
             ], 422);
         }
 
@@ -138,6 +156,7 @@ class AuthController extends Controller
         $validator = Validator::make($request->all(), [
             'email' => 'required|email',
             'password' => 'required',
+            'captcha_token' => $this->recaptchaTokenRules(),
         ]);
 
         if ($validator->fails()) {
@@ -145,6 +164,13 @@ class AuthController extends Controller
                 'success' => false,
                 'message' => 'Validation error',
                 'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        if (! $this->passesRecaptcha($request)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'CAPTCHA validation failed.',
             ], 422);
         }
 
@@ -303,5 +329,78 @@ class AuthController extends Controller
                 ];
             })
             ->all();
+    }
+
+    /**
+     * Validate Google reCAPTCHA token (fail-closed only when secret is configured).
+     */
+    private function passesRecaptcha(Request $request): bool
+    {
+        $secret = (string) config('recaptcha.secret', '');
+
+        // Local/dev: when secret is not configured, skip verification.
+        if ($secret === '') {
+            return true;
+        }
+
+        $token = (string) $request->input('captcha_token', '');
+        if ($token === '') {
+            return false;
+        }
+
+        try {
+            $verifySsl = (bool) config('recaptcha.verify_ssl', true);
+
+            $response = Http::asForm()
+                ->withOptions(['verify' => $verifySsl])
+                ->timeout(5)
+                ->post(
+                'https://www.google.com/recaptcha/api/siteverify',
+                [
+                    'secret' => $secret,
+                    'response' => $token,
+                    'remoteip' => (string) $request->ip(),
+                ],
+            );
+
+            if (! $response->successful()) {
+                return false;
+            }
+
+            $payload = $response->json();
+
+            $ok = (bool) ($payload['success'] ?? false) === true;
+
+            if (! $ok) {
+                Log::warning('reCAPTCHA verify failed', [
+                    'errors' => $payload['error-codes'] ?? null,
+                    'score' => $payload['score'] ?? null,
+                    'action' => $payload['action'] ?? null,
+                ]);
+            }
+
+            return $ok;
+        } catch (\Throwable $e) {
+            Log::warning('reCAPTCHA verify exception', [
+                'message' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
+
+    /**
+     * Validation rules for captcha_token depending on whether secret is configured.
+     *
+     * @return array<int, string>
+     */
+    private function recaptchaTokenRules(): array
+    {
+        $secret = (string) config('recaptcha.secret', '');
+
+        if ($secret === '') {
+            return ['nullable', 'string'];
+        }
+
+        return ['required', 'string', 'min:20'];
     }
 }

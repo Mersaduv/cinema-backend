@@ -6,6 +6,7 @@ use App\Models\Movie;
 use App\Support\CatalogListPresentation;
 use App\Support\CatalogListResponseMapper;
 use App\Support\ContentMetadataOptions;
+use App\Support\ProgressiveVideoUrl;
 use App\Services\Cinema\CatalogCacheService;
 use App\Services\Cinema\CatalogCarouselCursor;
 use App\Services\Cinema\CatalogCarouselService;
@@ -241,6 +242,9 @@ class PublicMovieController extends Controller
         $mediaAsset = $movie->mediaAsset;
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
         $playbackUrl = $this->resolvePlaybackUrl($movie);
+        $progressiveUrl = ProgressiveVideoUrl::normalize(
+            data_get(is_array($movie->metadata) ? $movie->metadata : [], 'playback.progressive_url')
+        );
         $subtitleUrl = $this->resolveManagedOrExternalUrl($movie->subtitle_source_path);
         $normalizedGenres = $this->genreCatalogService->serializeGenres($movie->genres);
 
@@ -381,8 +385,9 @@ class PublicMovieController extends Controller
             'publish_status' => $movie->publish_status,
             'details' => $tmdbMetadata,
             'download_links' => $this->resolveMovieDownloadLinks($metadata),
-            'playback' => $playbackUrl ? [
+            'playback' => ($playbackUrl || $progressiveUrl) ? [
                 'master_playlist_url' => $playbackUrl,
+                'progressive_url' => $progressiveUrl,
                 'subtitle_url' => $subtitleUrl,
                 'audio_tracks' => $this->resolvePlaybackAudioTracks($movie),
                 'variants' => $mediaAsset?->variants
@@ -504,6 +509,11 @@ class PublicMovieController extends Controller
     private function resolvePlaybackUrl(Movie $movie): ?string
     {
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        if (strtolower((string) data_get($metadata, 'playback.protocol', '')) === 'mp4') {
+            return null;
+        }
+
         $manualUrl = data_get($metadata, 'playback.hls_url');
 
         if (filled($manualUrl)) {

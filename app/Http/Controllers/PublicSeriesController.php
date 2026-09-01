@@ -480,15 +480,24 @@ class PublicSeriesController extends Controller
         ?string $seriesHlsBase,
         ?string $seasonHlsBase,
     ): array {
-        $resolved = $this->seriesHlsPathService->resolveEpisodeHlsUrl(
-            $seriesHlsBase,
-            $seasonHlsBase,
-            $episode->hls_url,
-            $episode->season_number,
-            $episode->episode_number,
-        );
+        $sourceMethod = strtolower(trim((string) ($episode->source_method ?? 'hls')));
+        $hlsUrl = null;
+        $videoUrl = null;
 
-        $hlsUrl = $resolved['hls_url'] ?? null;
+        if (in_array($sourceMethod, ['url', 'upload', 'video'], true)) {
+            $videoUrl = \App\Support\ProgressiveVideoUrl::normalize($episode->video_url)
+                ?? (filled($episode->video_url) ? trim((string) $episode->video_url) : null);
+        } elseif ($sourceMethod !== 'embed') {
+            $resolved = $this->seriesHlsPathService->resolveEpisodeHlsUrl(
+                $seriesHlsBase,
+                $seasonHlsBase,
+                $episode->hls_url,
+                $episode->season_number,
+                $episode->episode_number,
+            );
+            $hlsUrl = $resolved['hls_url'] ?? null;
+        }
+
         $episodeMetadata = is_array($episode->metadata) ? $episode->metadata : [];
         $stillFields = $this->imagePresentationService->enrichListImageFields(
             $episode->still_url,
@@ -509,12 +518,18 @@ class PublicSeriesController extends Controller
             'still_srcset' => $stillFields['srcset'],
             'still_image' => $stillFields['image'],
             'hls_url' => $hlsUrl,
+            'video_url' => $videoUrl,
+            'source_method' => $episode->source_method ?? 'hls',
             'dash_url' => filled($episode->dash_url) && (bool) ($episode->dash_verified ?? false)
                 ? (string) $episode->dash_url
                 : null,
             'download_links' => $this->resolveEpisodeDownloadLinks($episode),
             'subtitle_url' => $episode->subtitle_url,
             'dubbed_audio_url' => $this->resolveExternalDubbedAudioUrl($episode),
+            'has_subtitle' => (bool) data_get($episodeMetadata, 'playback.has_subtitle', false)
+                || filled($episode->subtitle_url),
+            'has_dubbed' => (bool) data_get($episodeMetadata, 'playback.has_dubbed', false)
+                || filled($episode->dubbed_audio_url),
         ];
     }
 
@@ -577,6 +592,16 @@ class PublicSeriesController extends Controller
         ?string $seriesHlsBase,
         ?string $seasonHlsBase,
     ): bool {
+        $sourceMethod = strtolower(trim((string) ($episode->source_method ?? 'hls')));
+
+        if (in_array($sourceMethod, ['url', 'upload', 'video'], true)) {
+            return filled($episode->video_url);
+        }
+
+        if ($sourceMethod === 'embed') {
+            return filled($episode->embed_url);
+        }
+
         if (data_get($episode->metadata, 'playback.hls_verified') === false) {
             return false;
         }

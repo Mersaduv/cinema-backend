@@ -73,7 +73,15 @@ class ContentPipelineLauncher
         // when the worker actually picks the job up. Premature "running" leaves UI stuck
         // if the queue worker is down.
 
-        if (! $shouldValidateHlsAsync && filled($canonicalHlsUrl)) {
+        $playbackProtocol = strtolower(trim((string) ($validated['playback_protocol'] ?? 'hls')));
+        $isProgressiveMp4 = $playbackProtocol === 'mp4'
+            || filled(data_get($movie->metadata, 'playback.progressive_url'));
+
+        if ($isProgressiveMp4 && ! filled($canonicalHlsUrl)) {
+            $this->pipelineOrchestrator->taskSkipped($pipeline->id, 'hls_validate', [
+                'reason' => 'progressive_mp4',
+            ]);
+        } elseif (! $shouldValidateHlsAsync && filled($canonicalHlsUrl)) {
             $this->pipelineOrchestrator->taskStarted($pipeline->id, 'hls_validate');
             $this->pipelineOrchestrator->taskCompleted($pipeline->id, 'hls_validate', [
                 'skipped' => $hlsUrlUnchanged ? 'already_ready' : 'no_async_validation_needed',

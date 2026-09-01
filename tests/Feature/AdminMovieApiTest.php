@@ -573,6 +573,39 @@ M3U8, 200);
         $response->assertStatus(422);
     }
 
+    public function test_publication_form_accepts_progressive_mp4_without_hls(): void
+    {
+        $admin = $this->createAdminUser();
+        Sanctum::actingAs($admin);
+
+        $createResponse = $this->postJson('/api/admin/movies', [
+            'original_title' => 'Mp4 Movie',
+            'slug' => 'mp4-movie',
+            'publish_status' => 'draft',
+            'start_processing' => false,
+        ]);
+
+        $movieId = $createResponse->json('data.movie.id');
+
+        $response = $this->putJson("/api/admin/movies/{$movieId}/publication-form", [
+            'title' => 'Mp4 Movie',
+            'slug' => 'mp4-movie',
+            'playback_protocol' => 'mp4',
+            'progressive_url' => 'https://cdn.example.com/movies/mp4-movie/video.mp4',
+            'publish_status' => 'published',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.movie.processing_status', 'ready')
+            ->assertJsonPath('data.movie.metadata.playback.protocol', 'mp4')
+            ->assertJsonPath(
+                'data.movie.metadata.playback.progressive_url',
+                'https://cdn.example.com/movies/mp4-movie/video.mp4'
+            )
+            ->assertJsonPath('data.movie.metadata.playback.hls_url', null);
+    }
+
     private function createAdminUser(): User
     {
         $this->seed(RolePermissionSeeder::class);

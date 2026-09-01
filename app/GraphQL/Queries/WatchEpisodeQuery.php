@@ -240,10 +240,19 @@ class WatchEpisodeQuery
             return [];
         }
 
+        $hasProgressiveDub = filled($episode->dubbed_audio_url)
+            && preg_match('#\.m3u8(\?.*)?$#i', (string) $episode->dubbed_audio_url) !== 1;
+
+        // Invent original/dubbed only when an external progressive dub file exists.
+        // HLS alternate audio is discovered from the playlist by the player engine.
+        if (! $hasProgressiveDub) {
+            return [];
+        }
+
         return [
             [
-                'name' => 'Original Audio',
-                'language' => 'eng',
+                'name' => 'زبان اصلی',
+                'language' => 'und',
                 'type' => 'original',
             ],
             [

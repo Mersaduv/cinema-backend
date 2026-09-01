@@ -56,7 +56,7 @@ class PlaybackSessionController extends Controller
                 ->where('episode_number', $episode)
                 ->first();
 
-            if (! $episodeModel || ! filled($episodeModel->hls_url)) {
+            if (! $episodeModel || ! $this->playbackSessionService->episodeHasPlayableSource($episodeModel)) {
                 return response()->json(['success' => false, 'message' => 'Episode not found.'], 404);
             }
 

@@ -14,3 +14,7 @@
 | کاربران پنل | جدول `users` + نقش `admin`/`support` — فقط ساخت توسط ادمین، ورود `/adminbod`، API: `POST /api/staff/login` |
 | مدیریت بیننده | پنل `/admin/viewers` |
 | مدیریت کاربر | پنل `/admin/users` (بدون نقش user) |
+از D:\php82\php.exe 
+و  D:\php82\php.exe D:\php82\composer.phar
+
+نیاز شد بکار ببر

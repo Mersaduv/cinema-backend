@@ -5,6 +5,7 @@ namespace App\Services\Cinema;
 use App\Models\Movie;
 use App\Models\Series;
 use App\Models\SeriesEpisode;
+use App\Support\ProgressiveVideoUrl;
 use Illuminate\Support\Carbon;
 
 class PlaybackSessionService
@@ -26,8 +27,11 @@ class PlaybackSessionService
     public function issueForMovie(Movie $movie): array
     {
         $rawHls = (string) data_get($movie->metadata, 'playback.hls_url', '');
-        $canonical = $this->hlsPackageInsightService->normalizeHlsPackageMasterUrl($rawHls);
-        $dashUrl = $this->resolveDashUrl($movie->metadata ?? [], $canonical);
+        $protocol = strtolower((string) data_get($movie->metadata, 'playback.protocol', ''));
+        $canonical = $protocol === 'mp4'
+            ? null
+            : $this->hlsPackageInsightService->normalizeHlsPackageMasterUrl($rawHls);
+        $dashUrl = $protocol === 'mp4' ? null : $this->resolveDashUrl($movie->metadata ?? [], $canonical);
         $progressive = $this->resolveProgressiveUrl($movie->metadata ?? []);
 
         return $this->buildSession([
@@ -50,8 +54,23 @@ class PlaybackSessionService
      */
     public function issueForEpisode(SeriesEpisode $episode, Series $series): array
     {
-        $hls = trim((string) ($episode->hls_url ?: ''));
+        $sourceMethod = strtolower(trim((string) ($episode->source_method ?? 'hls')));
         $metadata = array_merge($series->metadata ?? [], $episode->metadata ?? []);
+
+        if (in_array($sourceMethod, ['url', 'upload', 'video'], true)) {
+            $progressive = ProgressiveVideoUrl::normalize($episode->video_url)
+                ?? $this->resolveProgressiveUrl($metadata);
+
+            return $this->buildSession([
+                'hls' => null,
+                'dash' => null,
+                'progressive' => $progressive,
+                'drm' => $this->resolveDrmConfig($series->drm_scheme ?? null, $series->drm_license_url ?? null)
+                    ?? data_get($metadata, 'playback.drm'),
+            ]);
+        }
+
+        $hls = trim((string) ($episode->hls_url ?: ''));
         $dash = filled($episode->dash_url) && (bool) ($episode->dash_verified ?? false)
             ? trim((string) $episode->dash_url)
             : $this->resolveDashUrl($metadata, $hls);
@@ -63,6 +82,21 @@ class PlaybackSessionService
             'drm' => $this->resolveDrmConfig($series->drm_scheme ?? null, $series->drm_license_url ?? null)
                 ?? data_get($metadata, 'playback.drm'),
         ]);
+    }
+
+    public function episodeHasPlayableSource(SeriesEpisode $episode): bool
+    {
+        $sourceMethod = strtolower(trim((string) ($episode->source_method ?? 'hls')));
+
+        if (in_array($sourceMethod, ['url', 'upload', 'video'], true)) {
+            return ProgressiveVideoUrl::looksLike($episode->video_url);
+        }
+
+        if ($sourceMethod === 'embed') {
+            return filled($episode->embed_url);
+        }
+
+        return filled($episode->hls_url);
     }
 
     public function verifyToken(?string $url): bool
@@ -222,6 +256,6 @@ class PlaybackSessionService
         $url = data_get($metadata, 'playback.progressive_url')
             ?? data_get($metadata, 'playback.preview_mp4');
 
-        return filled($url) ? trim((string) $url) : null;
+        return ProgressiveVideoUrl::normalize(filled($url) ? (string) $url : null);
     }
 }

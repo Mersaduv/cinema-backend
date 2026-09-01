@@ -54,4 +54,39 @@ class PlaybackSessionServiceTest extends TestCase
 
         $this->assertFalse($service->verifyToken($signedUrl));
     }
+
+    #[Test]
+    public function issue_for_movie_signs_progressive_url(): void
+    {
+        config(['cinema.playback_signing_secret' => '']);
+
+        $movie = new \App\Models\Movie();
+        $movie->metadata = [
+            'playback' => [
+                'progressive_url' => 'https://cdn.example.com/movies/a.mp4',
+            ],
+        ];
+
+        $session = app(PlaybackSessionService::class)->issueForMovie($movie);
+
+        $this->assertNull($session['hls_url']);
+        $this->assertSame('https://cdn.example.com/movies/a.mp4', $session['progressive_url']);
+    }
+
+    #[Test]
+    public function issue_for_episode_uses_video_url_when_source_is_mp4(): void
+    {
+        config(['cinema.playback_signing_secret' => '']);
+
+        $series = new \App\Models\Series();
+        $series->metadata = [];
+        $episode = new \App\Models\SeriesEpisode();
+        $episode->source_method = 'url';
+        $episode->video_url = 'https://cdn.example.com/series/s01e01.mp4';
+
+        $session = app(PlaybackSessionService::class)->issueForEpisode($episode, $series);
+
+        $this->assertNull($session['hls_url']);
+        $this->assertSame('https://cdn.example.com/series/s01e01.mp4', $session['progressive_url']);
+    }
 }

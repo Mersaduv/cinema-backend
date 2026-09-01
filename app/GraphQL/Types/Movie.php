@@ -203,7 +203,7 @@ final class Movie
     }
 
     /**
-     * @return array{playback: array{hls_url: ?string, downloads: list<array{quality: string, url: string, size_mb: ?int}>}}
+     * @return array{playback: array{hls_url: ?string, progressive_url: ?string, downloads: list<array{quality: string, url: string, size_mb: ?int}>}}
      */
     public function metadataPlayback(MovieModel $movie): array
     {
@@ -222,6 +222,7 @@ final class Movie
         return [
             'playback' => [
                 'hls_url' => $this->mediaUrlHelper->resolveMoviePlaybackUrl($movie),
+                'progressive_url' => $this->mediaUrlHelper->resolveMovieProgressiveUrl($movie),
                 'downloads' => $downloads,
             ],
         ];

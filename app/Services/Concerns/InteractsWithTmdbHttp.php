@@ -11,6 +11,8 @@ use RuntimeException;
 trait InteractsWithTmdbHttp
 {
     private const TMDB_RAW_CACHE_TTL_SECONDS = 900;
+    private const TMDB_HTTP_TIMEOUT_SECONDS = 20;
+    private const TMDB_HTTP_RETRY_ATTEMPTS = 3;
 
     protected function tmdbRawCacheKey(string $path, array $query): string
     {
@@ -89,45 +91,63 @@ trait InteractsWithTmdbHttp
             return $results;
         }
 
-        $accessToken = trim((string) config('services.tmdb.access_token'));
-        $apiKey = trim((string) config('services.tmdb.api_key'));
-        $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
+        for ($attempt = 1; $attempt <= self::TMDB_HTTP_RETRY_ATTEMPTS; $attempt++) {
+            if ($pending === []) {
+                break;
+            }
 
-        if ($accessToken === '' && $apiKey === '') {
-            throw new RuntimeException('TMDB credentials are not configured.');
-        }
+            $accessToken = trim((string) config('services.tmdb.access_token'));
+            $apiKey = trim((string) config('services.tmdb.api_key'));
+            $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
 
-        $responses = Http::pool(function (Pool $pool) use ($pending, $baseUrl, $accessToken, $apiKey) {
-            foreach ($pending as $key => [$path, $query]) {
-                $url = $baseUrl.$path;
-                $request = $this->configureHttpClient(
-                    $pool->as((string) $key)->acceptJson()->timeout(15)
-                );
+            if ($accessToken === '' && $apiKey === '') {
+                throw new RuntimeException('TMDB credentials are not configured.');
+            }
 
-                if ($accessToken !== '') {
-                    $request->withToken($accessToken)->get($url, $query);
-                } else {
-                    $request->get($url, array_merge($query, ['api_key' => $apiKey]));
+            $responses = Http::pool(function (Pool $pool) use ($pending, $baseUrl, $accessToken, $apiKey) {
+                foreach ($pending as $key => [$path, $query]) {
+                    $url = $baseUrl.$path;
+                    $request = $this->configureHttpClient(
+                        $pool->as((string) $key)->acceptJson()->timeout(self::TMDB_HTTP_TIMEOUT_SECONDS)
+                    );
+
+                    if ($accessToken !== '') {
+                        $request->withToken($accessToken)->get($url, $query);
+                    } else {
+                        $request->get($url, array_merge($query, ['api_key' => $apiKey]));
+                    }
                 }
+            });
+
+            $nextPending = [];
+
+            foreach ($pending as $key => [$path, $query, $cacheKey]) {
+                $response = $responses[(string) $key] ?? null;
+
+                if (! $response instanceof Response || ! $response->successful()) {
+                    if ($attempt < self::TMDB_HTTP_RETRY_ATTEMPTS) {
+                        $nextPending[$key] = [$path, $query, $cacheKey];
+                    } else {
+                        $results[$key] = [];
+                    }
+
+                    continue;
+                }
+
+                $body = $response->json() ?? [];
+
+                if ($body !== []) {
+                    Cache::put($cacheKey, $body, self::TMDB_RAW_CACHE_TTL_SECONDS);
+                }
+
+                $results[$key] = $body;
             }
-        });
 
-        foreach ($pending as $key => [$path, $query, $cacheKey]) {
-            $response = $responses[(string) $key] ?? null;
+            $pending = $nextPending;
 
-            if (! $response instanceof Response || ! $response->successful()) {
-                $results[$key] = [];
-
-                continue;
+            if ($pending !== [] && $attempt < self::TMDB_HTTP_RETRY_ATTEMPTS) {
+                usleep(250_000 * $attempt);
             }
-
-            $body = $response->json() ?? [];
-
-            if ($body !== []) {
-                Cache::put($cacheKey, $body, self::TMDB_RAW_CACHE_TTL_SECONDS);
-            }
-
-            $results[$key] = $body;
         }
 
         return $results;

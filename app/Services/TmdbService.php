@@ -159,14 +159,6 @@ class TmdbService
 
         $language = $this->resolveLanguage($language);
 
-        if (preg_match('/^\d+$/', $query) === 1) {
-            return collect([$this->fetchMovie((int) $query, $language)])
-                ->map(fn (array $item) => $this->normalizeDetailedMovieResult($item))
-                ->filter(fn (array $item) => $item['tmdb_id'] !== null)
-                ->values()
-                ->all();
-        }
-
         if (preg_match('/^tt\d{5,}$/i', $query) === 1) {
             $response = $this->request("/find/{$query}", [
                 'external_source' => 'imdb_id',
@@ -204,30 +196,6 @@ class TmdbService
         }
 
         $language = $this->resolveLanguage($language);
-
-        if (preg_match('/^\d+$/', $query) === 1) {
-            $tv = $this->fetchTv((int) $query, $language, false);
-
-            return collect([$this->normalizeTvSearchResult([
-                'id' => $tv['tmdb_id'],
-                'name' => $tv['title'],
-                'original_name' => $tv['original_title'],
-                'overview' => $tv['synopsis'],
-                'first_air_date' => $tv['first_air_date'] ?? null,
-                'vote_average' => $tv['rating'],
-                'poster_path' => null,
-                'backdrop_path' => null,
-            ])])
-                ->map(function (array $item) use ($tv) {
-                    return array_replace($item, [
-                        'poster_url' => $tv['poster_url'] ?? $item['poster_url'],
-                        'backdrop_url' => $tv['backdrop_url'] ?? $item['backdrop_url'],
-                    ]);
-                })
-                ->filter(fn (array $item) => $item['tmdb_id'] !== null)
-                ->values()
-                ->all();
-        }
 
         $response = $this->request('/search/tv', [
             'query' => $query,
@@ -935,7 +903,7 @@ class TmdbService
         $apiKey = trim((string) config('services.tmdb.api_key'));
         $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
         $request = $this->configureHttpClient(
-            Http::acceptJson()->timeout(15)
+            Http::acceptJson()->timeout(20)
         );
 
         if ($accessToken !== '') {
@@ -1056,15 +1024,20 @@ class TmdbService
             ? $details['_english_episode_overviews']
             : [];
 
-        $seasonPersianOverview = $this->fetchPersianOverviewFromTranslations(
-            "/tv/{$tmdbId}/season/{$seasonNumber}",
-        );
+        $seasonPersianOverview = $this->isPersianOverview($details['overview'] ?? null)
+            ? trim((string) ($details['overview'] ?? ''))
+            : $this->fetchPersianOverviewFromTranslations(
+                "/tv/{$tmdbId}/season/{$seasonNumber}",
+            );
 
         $episodesNeedingPersianOverview = collect($details['episodes'] ?? [])
-            ->filter(
-                fn (array $episode) => isset($episode['episode_number'])
-                    && (int) ($episode['episode_number'] ?? 0) > 0
-            )
+            ->filter(function (array $episode) {
+                if (! isset($episode['episode_number']) || (int) ($episode['episode_number'] ?? 0) <= 0) {
+                    return false;
+                }
+
+                return ! $this->isPersianOverview($episode['overview'] ?? null);
+            })
             ->map(fn (array $episode) => (int) ($episode['episode_number'] ?? 0))
             ->values()
             ->all();
@@ -1979,39 +1952,41 @@ class TmdbService
         $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
         $results = [];
 
-        $responses = Http::pool(function (\Illuminate\Http\Client\Pool $pool) use (
-            $episodeNumbers,
-            $seriesId,
-            $seasonNumber,
-            $accessToken,
-            $apiKey,
-            $baseUrl,
-        ) {
-            foreach ($episodeNumbers as $episodeNumber) {
-                $url = "{$baseUrl}/tv/{$seriesId}/season/{$seasonNumber}/episode/{$episodeNumber}/translations";
-                $request = $this->configureHttpClient(
-                    $pool->as("ep_{$episodeNumber}")->acceptJson()->timeout(15)
-                );
+        foreach (array_chunk($episodeNumbers, 8) as $episodeChunk) {
+            $responses = Http::pool(function (\Illuminate\Http\Client\Pool $pool) use (
+                $episodeChunk,
+                $seriesId,
+                $seasonNumber,
+                $accessToken,
+                $apiKey,
+                $baseUrl,
+            ) {
+                foreach ($episodeChunk as $episodeNumber) {
+                    $url = "{$baseUrl}/tv/{$seriesId}/season/{$seasonNumber}/episode/{$episodeNumber}/translations";
+                    $request = $this->configureHttpClient(
+                        $pool->as("ep_{$episodeNumber}")->acceptJson()->timeout(20)
+                    );
 
-                if ($accessToken !== '') {
-                    $request->withToken($accessToken)->get($url);
-                } else {
-                    $request->get($url, ['api_key' => $apiKey]);
+                    if ($accessToken !== '') {
+                        $request->withToken($accessToken)->get($url);
+                    } else {
+                        $request->get($url, ['api_key' => $apiKey]);
+                    }
                 }
-            }
-        });
+            });
 
-        foreach ($episodeNumbers as $episodeNumber) {
-            $response = $responses["ep_{$episodeNumber}"] ?? null;
+            foreach ($episodeChunk as $episodeNumber) {
+                $response = $responses["ep_{$episodeNumber}"] ?? null;
 
-            if (!$response || !$response->successful()) {
-                continue;
-            }
+                if (! $response || ! $response->successful()) {
+                    continue;
+                }
 
-            $overview = $this->extractPersianOverviewFromTranslationsPayload($response->json() ?? []);
+                $overview = $this->extractPersianOverviewFromTranslationsPayload($response->json() ?? []);
 
-            if ($overview) {
-                $results[$episodeNumber] = $overview;
+                if ($overview) {
+                    $results[$episodeNumber] = $overview;
+                }
             }
         }
 

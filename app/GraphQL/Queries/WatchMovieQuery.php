@@ -30,13 +30,15 @@ class WatchMovieQuery
         $downloads = $this->normalizeDownloads(data_get($playback, 'downloads', []));
 
         $hlsUrl = $this->mediaUrlHelper->resolveMoviePlaybackUrl($movie) ?? '';
+        $progressiveUrl = $this->mediaUrlHelper->resolveMovieProgressiveUrl($movie);
         $dashUrl = data_get($playback, 'dash_url');
         $dashVerified = (bool) data_get($playback, 'dash_verified', false);
 
         return [
             'id' => (string) $movie->id,
             'slug' => (string) $movie->slug,
-            'hls_url' => $hlsUrl,
+            'hls_url' => $hlsUrl !== '' ? $hlsUrl : null,
+            'progressive_url' => $progressiveUrl,
             'dash_url' => filled($dashUrl) && $dashVerified ? (string) $dashUrl : null,
             'subtitle_url' => $this->mediaUrlHelper->resolveManagedOrExternalUrl($movie->subtitle_source_path),
             'dubbed_audio_url' => $this->resolveExternalDubbedAudioUrl($movie),
@@ -72,7 +74,7 @@ class WatchMovieQuery
      */
     private function normalizeAudioTracks(Movie $movie): array
     {
-        return collect($movie->audio_tracks ?? [])
+        $stored = collect($movie->audio_tracks ?? [])
             ->map(fn (array $track) => [
                 'name' => (string) ($track['label'] ?? $track['name'] ?? 'صوت'),
                 'language' => (string) ($track['language'] ?? 'und'),
@@ -85,6 +87,34 @@ class WatchMovieQuery
             ])
             ->values()
             ->all();
+
+        if ($stored !== []) {
+            return $stored;
+        }
+
+        $hasProgressiveDub = filled($movie->dubbed_source_path)
+            && preg_match('#\.m3u8(\?.*)?$#i', (string) $movie->dubbed_source_path) !== 1;
+
+        if (! $hasProgressiveDub && ! (bool) $movie->has_dubbed_audio) {
+            return [];
+        }
+
+        if (! $hasProgressiveDub) {
+            return [];
+        }
+
+        return [
+            [
+                'name' => 'زبان اصلی',
+                'language' => 'und',
+                'type' => 'original',
+            ],
+            [
+                'name' => 'دوبله فارسی',
+                'language' => 'fa',
+                'type' => 'dubbed',
+            ],
+        ];
     }
 
     /**

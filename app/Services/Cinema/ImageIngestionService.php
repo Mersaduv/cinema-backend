@@ -580,6 +580,110 @@ class ImageIngestionService
     }
 
     /**
+     * Register variants for a file already stored under /images/... (admin upload).
+     *
+     * @param  array{
+     *   entity_type?: ?string,
+     *   entity_id?: ?int,
+     *   image_type?: string,
+     *   is_primary?: bool,
+     *   metadata?: array<string, mixed>
+     * }  $context
+     * @return array{success: bool, processed_url: ?string, fallback_url: ?string, image: ?array<string, mixed>, asset: ?ImageAsset, error: ?string}
+     */
+    public function registerUploadedManagedFile(string $publicPath, array $context): array
+    {
+        $publicPath = explode('?', trim($publicPath), 2)[0];
+
+        if (! $this->variantUrlBuilder->isManagedPublicUrl($publicPath)) {
+            return $this->failureResult($publicPath, null, 'Not a managed image path.');
+        }
+
+        $physicalPath = $this->imageStorageService->toPhysicalPath($publicPath);
+
+        if (! is_file($physicalPath)) {
+            return $this->failureResult($publicPath, null, 'Uploaded file not found on disk.');
+        }
+
+        $binary = file_get_contents($physicalPath);
+
+        if ($binary === false) {
+            return $this->failureResult($publicPath, null, 'Unable to read uploaded file.');
+        }
+
+        $imageInfo = @getimagesizefromstring($binary);
+        $mimeType = is_array($imageInfo) && isset($imageInfo['mime'])
+            ? (string) $imageInfo['mime']
+            : 'image/jpeg';
+        $width = is_array($imageInfo) ? ($imageInfo[0] ?? null) : null;
+        $height = is_array($imageInfo) ? ($imageInfo[1] ?? null) : null;
+
+        $folderType = $this->imageStorageService->resolveFolderType(
+            (string) ($context['image_type'] ?? 'image'),
+            $context['entity_type'] ?? null,
+        );
+
+        $imageObject = $this->variantUrlBuilder->buildFromPublicPath(
+            $publicPath,
+            $mimeType,
+            is_int($width) ? $width : null,
+            is_int($height) ? $height : null,
+        );
+
+        $checksum = hash('sha256', $binary);
+        $sourceHash = $this->sourceNormalizer->sourceHash($publicPath);
+
+        $asset = ImageAsset::query()
+            ->where('original_public_url', $publicPath)
+            ->orWhere('public_path', $publicPath)
+            ->orderByDesc('id')
+            ->first();
+
+        $payload = [
+            'entity_type' => $context['entity_type'] ?? null,
+            'entity_id' => $context['entity_id'] ?? null,
+            'image_type' => (string) ($context['image_type'] ?? 'image'),
+            'source_url' => $publicPath,
+            'source_hash' => $sourceHash,
+            'original_public_url' => $imageObject['original'],
+            'blur_url' => $imageObject['blur'],
+            'src_url' => $imageObject['src'],
+            'srcset_json' => $imageObject['srcset'],
+            'srcset_string' => $imageObject['srcset_string'],
+            'variants_json' => [
+                'blur' => $imageObject['blur'],
+                'src' => $imageObject['src'],
+            ],
+            'physical_storage_path' => $physicalPath,
+            'public_path' => $publicPath,
+            'folder_type' => $folderType,
+            'year' => (int) now()->format('Y'),
+            'filename' => basename($publicPath),
+            'extension' => pathinfo($publicPath, PATHINFO_EXTENSION),
+            'mime_type' => $mimeType,
+            'width' => $width,
+            'height' => $height,
+            'file_size' => strlen($binary),
+            'checksum' => $checksum,
+            'status' => 'ready',
+            'error_message' => null,
+            'is_primary' => (bool) ($context['is_primary'] ?? false),
+            'metadata' => $context['metadata'] ?? null,
+        ];
+
+        if ($asset) {
+            $asset->update($payload);
+            $asset = $asset->fresh();
+        } else {
+            $asset = ImageAsset::query()->create($payload);
+        }
+
+        $this->bustPresentationCache($context);
+
+        return $this->successFromAsset($asset, $publicPath);
+    }
+
+    /**
      * @param  array<string, mixed>  $context
      */
     private function bustPresentationCache(array $context): void

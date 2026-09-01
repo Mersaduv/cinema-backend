@@ -398,4 +398,42 @@ class GraphqlPublicApiTest extends TestCase
             ->assertJsonPath('data.watchMovie.dubbed_audio_url', null)
             ->assertJsonMissingPath('errors');
     }
+
+    public function test_watch_movie_query_returns_progressive_url_without_hls(): void
+    {
+        Movie::query()->create([
+            'title' => 'Progressive Watch',
+            'slug' => 'progressive-watch',
+            'media_folder' => 'movies/progressive-watch',
+            'publish_status' => 'published',
+            'published_at' => now(),
+            'metadata' => [
+                'playback' => [
+                    'protocol' => 'mp4',
+                    'progressive_url' => 'https://cdn.example.com/movies/progressive-watch/video.mp4',
+                ],
+            ],
+        ]);
+
+        $response = $this->postJson('/graphql', [
+            'query' => <<<'GQL'
+                query ($slug: String!) {
+                  watchMovie(slug: $slug) {
+                    hls_url
+                    progressive_url
+                  }
+                }
+            GQL,
+            'variables' => ['slug' => 'progressive-watch'],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.watchMovie.hls_url', null)
+            ->assertJsonPath(
+                'data.watchMovie.progressive_url',
+                'https://cdn.example.com/movies/progressive-watch/video.mp4'
+            )
+            ->assertJsonMissingPath('errors');
+    }
 }

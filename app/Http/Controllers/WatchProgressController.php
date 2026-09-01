@@ -7,6 +7,7 @@ use App\Models\Series;
 use App\Models\SeriesEpisode;
 use App\Models\Viewer;
 use App\Models\WatchProgress;
+use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\WatchProgressLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +19,7 @@ class WatchProgressController extends Controller
 {
     public function __construct(
         private readonly WatchProgressLifecycleService $watchProgressLifecycle,
+        private readonly ImagePresentationService $imagePresentationService,
     ) {
     }
 
@@ -305,7 +307,14 @@ class WatchProgressController extends Controller
     }
 
     /**
-     * @return array{slug?: string, seriesSlug?: string, title?: string, posterUrl?: string|null}
+     * @return array{
+     *   slug?: string,
+     *   seriesSlug?: string,
+     *   title?: string,
+     *   posterUrl?: string|null,
+     *   backdropUrl?: string|null,
+     *   stillUrl?: string|null
+     * }
      */
     private function resolveDisplayMetadata(WatchProgress $row): array
     {
@@ -315,14 +324,33 @@ class WatchProgressController extends Controller
                 return [];
             }
 
+            $metadata = is_array($series->metadata) ? $series->metadata : [];
             $title = $series->title;
-            $posterUrl = $series->poster_url;
+            $posterUrl = $this->imagePresentationService->resolveSeriesPosterUrl(
+                $series->poster_url,
+                $metadata,
+            );
+            $backdropUrl = $this->imagePresentationService->resolveSeriesBackdropUrl(
+                $series->backdrop_url,
+                $metadata,
+            );
+            $stillUrl = null;
 
             if ($row->episode_id) {
                 $episode = SeriesEpisode::query()->find($row->episode_id);
                 if ($episode !== null) {
                     $title = trim($series->title.' — '.$episode->title);
-                    $posterUrl = $episode->still_url ?: $posterUrl;
+                    $episodeMetadata = is_array($episode->metadata) ? $episode->metadata : [];
+                    $stillImage = $this->imagePresentationService->episodeStillImage(
+                        $episodeMetadata,
+                        $episode->still_url,
+                    );
+                    $stillUrl = is_array($stillImage)
+                        ? ($stillImage['src'] ?? $stillImage['original'] ?? null)
+                        : null;
+                    if (! is_string($stillUrl) || $stillUrl === '') {
+                        $stillUrl = filled($episode->still_url) ? (string) $episode->still_url : null;
+                    }
                 }
             }
 
@@ -330,7 +358,9 @@ class WatchProgressController extends Controller
                 'slug' => $series->slug,
                 'seriesSlug' => $series->slug,
                 'title' => $title,
-                'posterUrl' => $posterUrl,
+                'posterUrl' => $stillUrl ?: $posterUrl,
+                'backdropUrl' => $backdropUrl,
+                'stillUrl' => $stillUrl,
             ];
         }
 
@@ -339,10 +369,18 @@ class WatchProgressController extends Controller
             return [];
         }
 
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+        $posterUrl = $this->imagePresentationService->resolveMoviePosterUrl(
+            $movie->poster_path,
+            $metadata,
+        );
+        $backdropUrl = $this->imagePresentationService->resolveMovieBackdropUrl($metadata);
+
         return [
             'slug' => $movie->slug,
             'title' => $movie->title,
-            'posterUrl' => $movie->poster_url,
+            'posterUrl' => $posterUrl,
+            'backdropUrl' => $backdropUrl,
         ];
     }
 }

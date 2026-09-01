@@ -26,6 +26,7 @@ use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaSynopsisHelper;
 use App\Support\CinemaValidation;
 use App\Support\ContentMetadataOptions;
+use App\Support\ProgressiveVideoUrl;
 use App\Services\Cinema\ContentImageIngestionService;
 use App\Services\Cinema\ContentPipelineLauncher;
 use App\Services\Cinema\ContentPipelineStatusService;
@@ -46,6 +47,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 
 class AdminMovieController extends Controller
@@ -424,9 +426,15 @@ class AdminMovieController extends Controller
             'actors.*.character' => ['nullable', 'string', 'max:255'],
             'actors.*.profile_url' => CinemaValidation::nullableImageOrUrl(),
             'hls_url' => ['nullable', 'string', 'max:2048'],
+            'playback_protocol' => ['nullable', Rule::in(['hls', 'mp4'])],
+            'progressive_url' => ['nullable', 'string', 'max:2048'],
             'download_links' => ['nullable', 'array'],
             'download_links.*' => ['nullable', 'string', 'max:2048'],
-            'subtitle_source_path' => ['nullable', 'url', 'max:2048'],
+            'subtitle_source_path' => ['nullable', 'string', 'max:2048'],
+            'dubbed_source_path' => ['nullable', 'string', 'max:2048'],
+            'has_subtitle' => ['nullable', 'boolean'],
+            'has_dubbed_audio' => ['nullable', 'boolean'],
+            'dubbed_audio_url' => ['nullable', 'string', 'max:2048'],
             'cast_members' => ['nullable', 'array'],
             'cast_members.*' => ['string', 'max:255'],
             'cast' => ['nullable', 'array'],
@@ -471,33 +479,70 @@ class AdminMovieController extends Controller
         $subtitleSourcePath = filled($validated['subtitle_source_path'] ?? null)
             ? trim((string) $validated['subtitle_source_path'])
             : null;
+        $dubbedSourcePathRaw = $validated['dubbed_source_path']
+            ?? $validated['dubbed_audio_url']
+            ?? null;
+        $dubbedSourcePath = filled($dubbedSourcePathRaw)
+            ? trim((string) $dubbedSourcePathRaw)
+            : null;
 
         $existingMetadata = is_array($movie->metadata) ? $movie->metadata : [];
         $downloadLinks = collect($validated['download_links'] ?? [])
             ->mapWithKeys(fn ($value, $key) => [trim((string) $key) => $value])
             ->filter(fn ($value, $key) => $key !== '' && filled($value))
             ->all();
-        $manualHlsUrlRaw = isset($validated['hls_url']) ? trim((string) $validated['hls_url']) : null;
-        $canonicalHlsUrl = filled($manualHlsUrlRaw)
-            ? $this->hlsPackageInsightService->normalizeHlsPackageMasterUrl($manualHlsUrlRaw)
+        $playbackProtocol = strtolower(trim((string) ($validated['playback_protocol'] ?? '')));
+        $progressiveUrlRaw = isset($validated['progressive_url'])
+            ? trim((string) $validated['progressive_url'])
             : null;
-        $storedHlsUrl = data_get($existingMetadata, 'playback.hls_url');
-        $hlsUrlUnchanged = filled($canonicalHlsUrl)
-            && is_string($storedHlsUrl)
-            && trim($storedHlsUrl) === trim((string) $canonicalHlsUrl)
-            && $movie->processing_status === 'ready';
-        $shouldValidateHlsAsync = filled($canonicalHlsUrl) && ! $hlsUrlUnchanged;
-        $nextProcessingStatus = match (true) {
-            $hlsUrlUnchanged => 'ready',
-            filled($canonicalHlsUrl) => 'queued',
-            default => 'pending',
-        };
+        $normalizedProgressiveUrl = ProgressiveVideoUrl::normalize($progressiveUrlRaw);
+        $manualHlsUrlRaw = isset($validated['hls_url']) ? trim((string) $validated['hls_url']) : null;
+
+        if ($playbackProtocol === '') {
+            $playbackProtocol = filled($normalizedProgressiveUrl) && ! filled($manualHlsUrlRaw)
+                ? 'mp4'
+                : 'hls';
+        }
+
+        if ($playbackProtocol === 'mp4') {
+            if ($progressiveUrlRaw !== null && $progressiveUrlRaw !== '' && $normalizedProgressiveUrl === null) {
+                throw ValidationException::withMessages([
+                    'progressive_url' => ['آدرس ویدیو باید به فایل progressive مثل .mp4 اشاره کند.'],
+                ]);
+            }
+
+            $manualHlsUrlRaw = null;
+            $canonicalHlsUrl = null;
+            $shouldValidateHlsAsync = false;
+            $hlsUrlUnchanged = true;
+            $nextProcessingStatus = filled($normalizedProgressiveUrl) ? 'ready' : 'pending';
+        } else {
+            $normalizedProgressiveUrl = null;
+            $canonicalHlsUrl = filled($manualHlsUrlRaw)
+                ? $this->hlsPackageInsightService->normalizeHlsPackageMasterUrl($manualHlsUrlRaw)
+                : null;
+            $storedHlsUrl = data_get($existingMetadata, 'playback.hls_url');
+            $hlsUrlUnchanged = filled($canonicalHlsUrl)
+                && is_string($storedHlsUrl)
+                && trim($storedHlsUrl) === trim((string) $canonicalHlsUrl)
+                && $movie->processing_status === 'ready';
+            $shouldValidateHlsAsync = filled($canonicalHlsUrl) && ! $hlsUrlUnchanged;
+            $nextProcessingStatus = match (true) {
+                $hlsUrlUnchanged => 'ready',
+                filled($canonicalHlsUrl) => 'queued',
+                default => 'pending',
+            };
+        }
+
+        $validated['playback_protocol'] = $playbackProtocol;
         $resolvedSourcePath = $movie->mediaAsset?->source_path;
         $resolvedSubtitleSourcePath = $subtitleSourcePath;
+        $resolvedDubbedSourcePath = $dubbedSourcePath;
+        $resolvedHasSubtitle = (bool) ($validated['has_subtitle'] ?? false)
+            || filled($resolvedSubtitleSourcePath);
+        $resolvedHasDubbedAudio = (bool) ($validated['has_dubbed_audio'] ?? false)
+            || filled($resolvedDubbedSourcePath);
         $resolvedAudioTracks = $movie->audio_tracks ?? [];
-        $resolvedHasDubbedAudio = (bool) $movie->has_dubbed_audio;
-        $resolvedDubbedSourcePath = $movie->dubbed_source_path;
-        $resolvedHasSubtitle = filled($resolvedSubtitleSourcePath);
         $castMembers = collect($validated['cast_members'] ?? [])
             ->map(fn ($item) => trim((string) $item))
             ->filter()
@@ -650,11 +695,17 @@ class AdminMovieController extends Controller
                 'network_ids' => $filterIds['network_ids'],
             ],
             'playback' => [
-                'hls_url' => $canonicalHlsUrl ?? $manualHlsUrlRaw,
-                'dash_url' => $manualDashUrl ?? data_get($existingMetadata, 'playback.dash_url'),
-                'dash_verified' => filled($manualDashUrl)
-                    ? true
-                    : (bool) data_get($existingMetadata, 'playback.dash_verified', false),
+                'protocol' => $playbackProtocol,
+                'hls_url' => $playbackProtocol === 'mp4' ? null : ($canonicalHlsUrl ?? $manualHlsUrlRaw),
+                'progressive_url' => $normalizedProgressiveUrl,
+                'dash_url' => $playbackProtocol === 'mp4'
+                    ? null
+                    : ($manualDashUrl ?? data_get($existingMetadata, 'playback.dash_url')),
+                'dash_verified' => $playbackProtocol === 'mp4'
+                    ? false
+                    : (filled($manualDashUrl)
+                        ? true
+                        : (bool) data_get($existingMetadata, 'playback.dash_verified', false)),
                 'downloads' => $downloadLinks,
             ],
         ]);
@@ -1397,7 +1448,9 @@ class AdminMovieController extends Controller
                     'actors' => data_get($metadata, 'tmdb.actors', []),
                 ],
                 'playback' => [
+                    'protocol' => data_get($metadata, 'playback.protocol', filled(data_get($metadata, 'playback.progressive_url')) ? 'mp4' : 'hls'),
                     'hls_url' => data_get($metadata, 'playback.hls_url'),
+                    'progressive_url' => data_get($metadata, 'playback.progressive_url'),
                     'dash_url' => data_get($metadata, 'playback.dash_url'),
                     'downloads' => data_get($metadata, 'playback.downloads', []),
                 ],

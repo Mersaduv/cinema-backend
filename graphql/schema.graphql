@@ -202,6 +202,7 @@ type MovieDetailsBlock {
 
 type PlaybackMeta {
   hls_url: String
+  progressive_url: String
   downloads: [DownloadLink!]!
 }
 
@@ -220,7 +221,8 @@ type AudioTrack {
 type MovieWatch {
   id: ID!
   slug: String!
-  hls_url: String!
+  hls_url: String
+  progressive_url: String
   dash_url: String
   subtitle_url: String
   dubbed_audio_url: String
@@ -418,6 +420,8 @@ type SeriesEpisode {
   title: String
   synopsis: String
   hls_url: String
+  video_url: String
+  source_method: String
   dash_url: String
   subtitle_url: String
   dubbed_audio_url: String

@@ -979,6 +979,71 @@ class ContentImageIngestionService
     }
 
     /**
+     * Persist an admin-uploaded managed image onto a movie/series record immediately.
+     *
+     * @param  array<string, mixed>|null  $imageObject
+     * @return array{entity_type: string, entity_id: int, image_role: string, image_path: string}
+     */
+    public function syncUploadedCatalogImage(
+        string $entityType,
+        int $entityId,
+        string $imageRole,
+        string $publicPath,
+        ?array $imageObject = null,
+    ): array {
+        $publicPath = $this->preferRelativeManagedPublicUrl($publicPath) ?? trim($publicPath);
+        $field = $imageRole === 'backdrop' ? 'backdrop_url' : 'poster_url';
+        $imageType = $imageRole === 'backdrop' ? 'backdrop' : 'poster';
+
+        if ($entityType === 'movie') {
+            $movie = Movie::query()->findOrFail($entityId);
+            $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+            $images = is_array($metadata['images'] ?? null) ? $metadata['images'] : [];
+            $tmdb = is_array($metadata['tmdb'] ?? null) ? $metadata['tmdb'] : [];
+
+            if ($imageObject) {
+                $images[$imageType] = $imageObject;
+            }
+
+            $tmdb[$field] = $publicPath;
+            unset($tmdb[$this->sourceMetadataKey($field)]);
+            $metadata['images'] = $images;
+            $metadata['tmdb'] = $tmdb;
+
+            $movie->update([
+                'poster_path' => $imageRole === 'poster' ? $publicPath : $movie->poster_path,
+                'metadata' => $metadata,
+            ]);
+        } elseif ($entityType === 'series') {
+            $series = Series::query()->findOrFail($entityId);
+            $metadata = is_array($series->metadata) ? $series->metadata : [];
+            $images = is_array($metadata['images'] ?? null) ? $metadata['images'] : [];
+            $tmdb = is_array($metadata['tmdb'] ?? null) ? $metadata['tmdb'] : [];
+
+            if ($imageObject) {
+                $images[$imageType] = $imageObject;
+            }
+
+            $tmdb[$field] = $publicPath;
+            unset($tmdb[$this->sourceMetadataKey($field)]);
+            $metadata['images'] = $images;
+            $metadata['tmdb'] = $tmdb;
+
+            $series->update([
+                $field => $publicPath,
+                'metadata' => $metadata,
+            ]);
+        }
+
+        return [
+            'entity_type' => $entityType,
+            'entity_id' => $entityId,
+            'image_role' => $imageRole,
+            'image_path' => $publicPath,
+        ];
+    }
+
+    /**
      * Resolve a remote image URL queued during save (source preferred over display URL).
      * Unlike resolveIngestUrl(), matching form+source is expected before ingest and must not skip.
      */

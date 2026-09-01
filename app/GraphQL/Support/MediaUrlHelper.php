@@ -26,6 +26,11 @@ final class MediaUrlHelper
     public function resolveMoviePlaybackUrl(\App\Models\Movie $movie): ?string
     {
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+
+        if (strtolower((string) data_get($metadata, 'playback.protocol', '')) === 'mp4') {
+            return null;
+        }
+
         $manualUrl = data_get($metadata, 'playback.hls_url');
 
         if (filled($manualUrl)) {
@@ -47,5 +52,18 @@ final class MediaUrlHelper
         }
 
         return null;
+    }
+
+    public function resolveMovieProgressiveUrl(\App\Models\Movie $movie): ?string
+    {
+        $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+        $url = data_get($metadata, 'playback.progressive_url')
+            ?? data_get($metadata, 'playback.preview_mp4');
+
+        if (! filled($url)) {
+            return null;
+        }
+
+        return \App\Support\ProgressiveVideoUrl::normalize((string) $url);
     }
 }

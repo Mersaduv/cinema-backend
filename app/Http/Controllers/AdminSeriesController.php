@@ -846,8 +846,10 @@ class AdminSeriesController extends Controller
             'seasons.*.episodes.*.dash_verified' => ['nullable', 'boolean'],
             'seasons.*.episodes.*.download_links' => ['nullable', 'array'],
             'seasons.*.episodes.*.download_links.*' => ['nullable', 'string', 'max:2048'],
-            'seasons.*.episodes.*.subtitle_url' => ['nullable', 'url', 'max:2048'],
-            'seasons.*.episodes.*.dubbed_audio_url' => ['nullable', 'url', 'max:2048'],
+            'seasons.*.episodes.*.subtitle_url' => ['nullable', 'string', 'max:2048'],
+            'seasons.*.episodes.*.dubbed_audio_url' => ['nullable', 'string', 'max:2048'],
+            'seasons.*.episodes.*.has_subtitle' => ['nullable', 'boolean'],
+            'seasons.*.episodes.*.has_dubbed' => ['nullable', 'boolean'],
             'seasons.*.episodes.*.publish_status' => ['nullable', Rule::in(['draft', 'scheduled', 'published'])],
             'tmdb_excluded_season_numbers' => ['nullable', 'array'],
             'tmdb_excluded_season_numbers.*' => ['integer', 'min:1', 'max:999'],
@@ -1343,6 +1345,13 @@ class AdminSeriesController extends Controller
             $episodeSynopsis = $episodeSynopsisFields['synopsis'];
             $episodeSynopsisEn = $episodeSynopsisFields['synopsis_en'];
 
+            $episodeSubtitleUrl = $this->nullableString($episodePayload['subtitle_url'] ?? null);
+            $episodeDubbedAudioUrl = $this->nullableString($episodePayload['dubbed_audio_url'] ?? null);
+            $episodeHasSubtitle = (bool) ($episodePayload['has_subtitle'] ?? false)
+                || filled($episodeSubtitleUrl);
+            $episodeHasDubbed = (bool) ($episodePayload['has_dubbed'] ?? false)
+                || filled($episodeDubbedAudioUrl);
+
             $metadata = [
                 ...$existingEpisodeMetadata,
                 'playback' => [
@@ -1351,6 +1360,8 @@ class AdminSeriesController extends Controller
                     'hls_verified' => $episodeHlsVerified,
                     'dash_verified' => $episodeDashVerified,
                     'downloads' => $episodeDownloads,
+                    'has_subtitle' => $episodeHasSubtitle,
+                    'has_dubbed' => $episodeHasDubbed,
                 ],
                 'tmdb' => [
                     ...(array) data_get($existingEpisodeMetadata, 'tmdb', []),
@@ -1379,8 +1390,8 @@ class AdminSeriesController extends Controller
                 'hls_url' => $episodeHlsUrl,
                 'dash_url' => $episodeDashUrl,
                 'dash_verified' => $episodeDashVerified,
-                'subtitle_url' => $this->nullableString($episodePayload['subtitle_url'] ?? null),
-                'dubbed_audio_url' => $this->nullableString($episodePayload['dubbed_audio_url'] ?? null),
+                'subtitle_url' => $episodeSubtitleUrl,
+                'dubbed_audio_url' => $episodeDubbedAudioUrl,
                 'publish_status' => $episodePayload['publish_status'] ?? 'draft',
                 'sort_order' => $episodeIndex,
                 'metadata' => json_encode($metadata, JSON_UNESCAPED_UNICODE) ?: '{}',
@@ -1878,6 +1889,10 @@ class AdminSeriesController extends Controller
             'download_links' => data_get($episode->metadata, 'playback.downloads', []),
             'subtitle_url' => $episode->subtitle_url,
             'dubbed_audio_url' => $episode->dubbed_audio_url,
+            'has_subtitle' => (bool) data_get($metadata, 'playback.has_subtitle', false)
+                || filled($episode->subtitle_url),
+            'has_dubbed' => (bool) data_get($metadata, 'playback.has_dubbed', false)
+                || filled($episode->dubbed_audio_url),
             'publish_status' => $episode->publish_status,
         ];
     }
@@ -2063,12 +2078,14 @@ class AdminSeriesController extends Controller
             foreach ($episodes as $episode) {
                 $subtitleUrl = trim((string) ($episode['subtitle_url'] ?? ''));
                 $dubbedAudioUrl = trim((string) ($episode['dubbed_audio_url'] ?? ''));
+                $hasSubtitleFlag = (bool) ($episode['has_subtitle'] ?? false);
+                $hasDubbedFlag = (bool) ($episode['has_dubbed'] ?? false);
 
-                if ($subtitleUrl !== '') {
+                if ($subtitleUrl !== '' || $hasSubtitleFlag) {
                     $hasSubtitle = true;
                 }
 
-                if ($dubbedAudioUrl !== '') {
+                if ($dubbedAudioUrl !== '' || $hasDubbedFlag) {
                     $hasDubbed = true;
                 }
 
@@ -2102,8 +2119,10 @@ class AdminSeriesController extends Controller
             'dash_verified' => ['nullable', 'boolean'],
             'download_links' => ['nullable', 'array'],
             'download_links.*' => ['nullable', 'string', 'max:2048'],
-            'subtitle_url' => ['nullable', 'url', 'max:2048'],
-            'dubbed_audio_url' => ['nullable', 'url', 'max:2048'],
+            'subtitle_url' => ['nullable', 'string', 'max:2048'],
+            'dubbed_audio_url' => ['nullable', 'string', 'max:2048'],
+            'has_subtitle' => ['nullable', 'boolean'],
+            'has_dubbed' => ['nullable', 'boolean'],
             'publish_status' => ['nullable', Rule::in(['draft', 'scheduled', 'published'])],
             'season' => ['nullable', 'array'],
             'season.hls_base_url' => ['nullable', 'string', 'max:2048'],

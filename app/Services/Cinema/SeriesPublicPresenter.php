@@ -453,12 +453,21 @@ class SeriesPublicPresenter
         return $episodes->contains(function (SeriesEpisode $episode) use ($seriesHlsBase, $column) {
             $seasonMetadata = is_array($episode->season?->metadata) ? $episode->season->metadata : [];
             $seasonHlsBase = data_get($seasonMetadata, 'playback.hls_base_url');
+            $episodeMetadata = is_array($episode->metadata) ? $episode->metadata : [];
 
             if (! filled($episode->hls_url) && ! filled($seriesHlsBase)) {
                 return false;
             }
 
-            return filled($episode->{$column});
+            if (filled($episode->{$column})) {
+                return true;
+            }
+
+            return match ($column) {
+                'subtitle_url' => (bool) data_get($episodeMetadata, 'playback.has_subtitle', false),
+                'dubbed_audio_url' => (bool) data_get($episodeMetadata, 'playback.has_dubbed', false),
+                default => false,
+            };
         });
     }
 }

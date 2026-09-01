@@ -24,5 +24,14 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        $exceptions->render(function (\Illuminate\Http\Exceptions\PostTooLargeException $exception, $request) {
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'حجم درخواست از محدودیت سرور بیشتر است. حداکثر مجاز آپلود تصویر ۱۰ مگابایت است.',
+                ], 413);
+            }
+
+            return null;
+        });
     })->create();

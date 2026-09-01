@@ -8,6 +8,7 @@ use App\Http\Controllers\AdminMovieController;
 use App\Http\Controllers\AdminReviewController;
 use App\Http\Controllers\AdminPersonController;
 use App\Http\Controllers\AdminSeriesController;
+use App\Http\Controllers\AdminUploadController;
 use App\Http\Controllers\AdminUserController;
 use App\Http\Controllers\AdminViewerController;
 use App\Http\Controllers\AuthController;
@@ -51,27 +52,39 @@ Route::get('/health', function () {
 
 // Authentication routes (public)
 // Viewer auth — self-registration and public login
-Route::post('/register', [AuthController::class, 'register']);
+Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
 Route::post('/login', [AuthController::class, 'login']);
 // Staff/admin auth — accounts are created only by admins
 Route::post('/staff/login', [AuthController::class, 'staffLogin']);
-Route::get('/filter-options', FilterOptionsController::class);
-Route::get('/search', SearchController::class);
-Route::get('/movies', [PublicMovieController::class, 'index']);
-Route::get('/movies/{movie:slug}', [PublicMovieController::class, 'show']);
-Route::get('/movies/{movie:slug}/related', [PublicMovieController::class, 'related']);
-Route::get('/movies/{movie:slug}/reviews', [PublicReviewController::class, 'movieReviews']);
-Route::get('/series', [PublicSeriesController::class, 'index']);
-Route::get('/series/{series:slug}', [PublicSeriesController::class, 'show']);
-Route::get('/series/{series:slug}/related', [PublicSeriesController::class, 'related']);
-Route::get('/series/{series:slug}/episodes', [PublicSeriesController::class, 'episodes']);
-Route::get('/series/{series:slug}/reviews', [PublicReviewController::class, 'seriesReviews']);
-Route::get('/collections', [PublicCollectionController::class, 'index']);
-Route::get('/collections/{collection:slug}', [PublicCollectionController::class, 'show']);
-Route::get('/persons', [PersonController::class, 'index']);
-Route::get('/persons/{slug}', [PersonController::class, 'show']);
-Route::get('/v1/playback/session', [PlaybackSessionController::class, 'show']);
-Route::get('/v1/playback/verify-token', [PlaybackSessionController::class, 'verifyToken']);
+
+// Public catalog/search (basic bot & burst protection)
+Route::middleware('throttle:90,1')->group(function () {
+    Route::get('/filter-options', FilterOptionsController::class);
+    Route::get('/search', SearchController::class);
+
+    Route::get('/movies', [PublicMovieController::class, 'index']);
+    Route::get('/movies/{movie:slug}', [PublicMovieController::class, 'show']);
+    Route::get('/movies/{movie:slug}/related', [PublicMovieController::class, 'related']);
+    Route::get('/movies/{movie:slug}/reviews', [PublicReviewController::class, 'movieReviews']);
+
+    Route::get('/series', [PublicSeriesController::class, 'index']);
+    Route::get('/series/{series:slug}', [PublicSeriesController::class, 'show']);
+    Route::get('/series/{series:slug}/related', [PublicSeriesController::class, 'related']);
+    Route::get('/series/{series:slug}/episodes', [PublicSeriesController::class, 'episodes']);
+    Route::get('/series/{series:slug}/reviews', [PublicReviewController::class, 'seriesReviews']);
+
+    Route::get('/collections', [PublicCollectionController::class, 'index']);
+    Route::get('/collections/{collection:slug}', [PublicCollectionController::class, 'show']);
+
+    Route::get('/persons', [PersonController::class, 'index']);
+    Route::get('/persons/{slug}', [PersonController::class, 'show']);
+});
+
+// Player/session endpoints
+Route::middleware('throttle:30,1')->group(function () {
+    Route::get('/v1/playback/session', [PlaybackSessionController::class, 'show']);
+    Route::get('/v1/playback/verify-token', [PlaybackSessionController::class, 'verifyToken']);
+});
 Route::post('/v1/content-views', [ContentViewController::class, 'store'])
     ->middleware('throttle:content-views');
 
@@ -128,6 +141,8 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin,media,support'])->prefix
     Route::middleware('permission:view_viewers,create_viewers,manage_viewers')->get('/viewers', [AdminViewerController::class, 'index']);
     Route::middleware('permission:create_viewers')->post('/viewers', [AdminViewerController::class, 'store']);
     Route::middleware('permission:manage_viewers')->match(['put', 'patch'], '/viewers/{viewer}/status', [AdminViewerController::class, 'updateStatus']);
+
+    Route::middleware('permission:edit_movies,create_movies,edit_series,create_series')->post('/upload/image', [AdminUploadController::class, 'storeImage']);
 
     Route::middleware('permission:view_movies,create_movies,edit_movies')->get('/movies/check-slug', [AdminMovieController::class, 'checkSlug']);
     Route::middleware('permission:view_movies')->get('/movies', [AdminMovieController::class, 'index']);
