@@ -18,6 +18,8 @@ use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\GenreAlignmentService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\HlsPackageInsightService;
+use App\Services\Cinema\NextPublicCacheRevalidationService;
+use App\Services\Cinema\PublicContentCacheService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaValidation;
 use App\Support\ContentMetadataOptions;
@@ -974,6 +976,33 @@ class AdminSeriesController extends Controller
             $extraPaths,
             fn ($path) => is_string($path) && filled($path),
         ));
+
+        foreach ($paths as $path) {
+            if (preg_match('#/series/([^/]+)#', $path, $matches) !== 1) {
+                continue;
+            }
+
+            $series = Series::query()->where('slug', $matches[1])->first();
+            if ($series) {
+                app(PublicContentCacheService::class)->forgetSeries($series->slug, $series->id);
+            }
+        }
+
+        $primarySlug = null;
+        $previousSlug = null;
+        foreach ($paths as $path) {
+            if (preg_match('#/series/([^/]+)#', $path, $matches) === 1) {
+                if ($primarySlug === null) {
+                    $primarySlug = $matches[1];
+                } else {
+                    $previousSlug = $matches[1];
+                }
+            }
+        }
+
+        if ($primarySlug !== null) {
+            app(NextPublicCacheRevalidationService::class)->revalidateSeries($primarySlug, $previousSlug);
+        }
 
         $this->catalogCacheService->scheduleRebuildAfterContentChange($paths);
     }

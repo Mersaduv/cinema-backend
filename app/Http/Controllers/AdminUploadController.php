@@ -48,7 +48,7 @@ class AdminUploadController extends Controller
             'file' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,gif', 'max:10240'],
             'entity_type' => ['nullable', Rule::in(['movie', 'series'])],
             'entity_id' => ['nullable', 'integer', 'min:1'],
-            'image_role' => ['nullable', Rule::in(['poster', 'backdrop'])],
+            'image_role' => ['nullable', Rule::in(['poster', 'backdrop', 'still'])],
         ], [
             'file.required' => 'فایل تصویر الزامی است.',
             'file.mimes' => 'فرمت تصویر مجاز نیست.',
@@ -75,7 +75,11 @@ class AdminUploadController extends Controller
         $entityType = $validated['entity_type'] ?? null;
         $entityId = isset($validated['entity_id']) ? (int) $validated['entity_id'] : null;
         $imageRole = $validated['image_role'] ?? 'poster';
-        $imageType = $imageRole === 'backdrop' ? 'backdrop' : 'poster';
+        $imageType = match ($imageRole) {
+            'backdrop' => 'backdrop',
+            'still' => 'still',
+            default => 'poster',
+        };
 
         $registerResult = $this->imageIngestionService->registerUploadedManagedFile(
             $plan['public_path'],
@@ -98,7 +102,12 @@ class AdminUploadController extends Controller
         $imageObject = $registerResult['image'];
         $synced = null;
 
-        if (is_string($entityType) && $entityId !== null && $entityId > 0) {
+        if (
+            is_string($entityType)
+            && $entityId !== null
+            && $entityId > 0
+            && in_array($imageRole, ['poster', 'backdrop'], true)
+        ) {
             $synced = $this->contentImageIngestionService->syncUploadedCatalogImage(
                 $entityType,
                 $entityId,

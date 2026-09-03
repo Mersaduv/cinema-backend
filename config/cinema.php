@@ -91,4 +91,10 @@ return [
         'trending_stale_hours' => (int) env('CINEMA_TRENDING_STALE_HOURS', 48),
         'trending_fallback_min_items' => (int) env('CINEMA_TRENDING_FALLBACK_MIN_ITEMS', 6),
     ],
+    'cache' => [
+        'detail_ttl' => (int) env('CINEMA_CACHE_DETAIL_TTL', 300),
+        'watch_ttl' => (int) env('CINEMA_CACHE_WATCH_TTL', 120),
+        'related_ttl' => (int) env('CINEMA_CACHE_RELATED_TTL', 3600),
+        'home_critical_ttl' => (int) env('CINEMA_CACHE_HOME_CRITICAL_TTL', 300),
+    ],
 ];

@@ -17,8 +17,10 @@ use App\Services\Cinema\CatalogFilterQuery;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\ImagePresentationService;
+use App\Services\Cinema\PublicContentCacheService;
 use App\Services\Cinema\RelatedContentService;
 use App\Services\Cinema\SeriesHlsPathService;
+use App\Services\Cinema\WatchPlaybackService;
 use App\Services\TmdbService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -40,6 +42,8 @@ class PublicSeriesController extends Controller
         private readonly CatalogCarouselService $catalogCarouselService,
         private readonly RelatedContentService $relatedContentService,
         private readonly ImagePresentationService $imagePresentationService,
+        private readonly PublicContentCacheService $contentCacheService,
+        private readonly WatchPlaybackService $watchPlaybackService,
     ) {
     }
 
@@ -168,9 +172,10 @@ class PublicSeriesController extends Controller
         }
 
         $limit = min(max((int) $request->integer('limit', 12), 1), 12);
-        $cacheKey = 'related_series_v1_'.$series->id;
+        $cacheKey = $this->contentCacheService->relatedSeriesKey($series->id);
+        $ttl = $this->contentCacheService->relatedTtl();
 
-        $items = Cache::remember($cacheKey, 3600, function () use ($series, $limit) {
+        $items = Cache::remember($cacheKey, $ttl, function () use ($series, $limit) {
             return $this->relatedContentService
                 ->relatedSeries($series, $limit)
                 ->map(fn (Series $item) => $this->transformSeriesListItem($item))
@@ -183,7 +188,7 @@ class PublicSeriesController extends Controller
                 'success' => true,
                 'data' => ['series' => $items],
             ])
-            ->header('Cache-Control', 'public, max-age=3600');
+            ->header('Cache-Control', 'public, max-age='.$ttl);
     }
 
     public function show(Request $request, Series $series): JsonResponse
@@ -195,30 +200,64 @@ class PublicSeriesController extends Controller
             ], 404);
         }
 
-        if ($request->boolean('lite')) {
-            $series->load(['castMembers.person', 'crewMembers.person', 'genres']);
+        $lite = $request->boolean('lite');
+        $cacheKey = $this->contentCacheService->seriesDetailKey($series->slug, $lite);
+        $ttl = $this->contentCacheService->detailTtl();
 
-            return response()->json([
-                'success' => true,
-                'data' => [
+        $payload = Cache::remember($cacheKey, $ttl, function () use ($series, $lite) {
+            if ($lite) {
+                $series->load(['castMembers.person', 'crewMembers.person', 'genres']);
+
+                return [
                     'series' => $this->transformSeriesOverview($series),
-                ],
+                ];
+            }
+
+            $series->load([
+                'seasons.episodes',
+                'castMembers.person',
+                'crewMembers.person',
+                'genres',
             ]);
+
+            return [
+                'series' => $this->transformSeries($series),
+            ];
+        });
+
+        return response()
+            ->json([
+                'success' => true,
+                'data' => $payload,
+            ])
+            ->withHeaders($this->contentCacheService->detailCacheHeaders($ttl));
+    }
+
+    public function playback(Request $request, Series $series): JsonResponse
+    {
+        if ($series->publish_status !== 'published') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Series is not published.',
+            ], 404);
         }
 
-        $series->load([
-            'seasons.episodes',
-            'castMembers.person',
-            'crewMembers.person',
-            'genres',
-        ]);
+        $season = max(1, (int) $request->integer('season', 1));
+        $episode = max(1, (int) $request->integer('episode', 1));
+        $ttl = $this->contentCacheService->watchTtl();
+        $payload = $this->watchPlaybackService->episodeWatchPayload($series->slug, $season, $episode);
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'series' => $this->transformSeries($series),
-            ],
-        ]);
+        return response()
+            ->json([
+                'success' => true,
+                'data' => [
+                    'playback' => $payload,
+                ],
+            ])
+            ->withHeaders([
+                'Cache-Control' => 'private, max-age='.$ttl.', stale-while-revalidate=30',
+                'Vary' => 'Accept-Encoding, Authorization',
+            ]);
     }
 
     public function episodes(Series $series): JsonResponse
@@ -230,21 +269,30 @@ class PublicSeriesController extends Controller
             ], 404);
         }
 
-        $series->load(['seasons.episodes']);
+        $cacheKey = $this->contentCacheService->seriesEpisodesKey($series->slug);
+        $ttl = $this->contentCacheService->detailTtl();
 
-        $metadata = is_array($series->metadata) ? $series->metadata : [];
-        $seriesHlsBase = data_get($metadata, 'playback.hls_base_url');
+        $payload = Cache::remember($cacheKey, $ttl, function () use ($series) {
+            $series->load(['seasons.episodes']);
 
-        return response()->json([
-            'success' => true,
-            'data' => [
+            $metadata = is_array($series->metadata) ? $series->metadata : [];
+            $seriesHlsBase = data_get($metadata, 'playback.hls_base_url');
+
+            return [
                 'seasons' => $series->seasons
                     ->map(fn (SeriesSeason $season) => $this->transformSeason($season, $seriesHlsBase))
                     ->filter(fn (array $season) => ($season['episodes'] ?? []) !== [])
                     ->values()
                     ->all(),
-            ],
-        ]);
+            ];
+        });
+
+        return response()
+            ->json([
+                'success' => true,
+                'data' => $payload,
+            ])
+            ->withHeaders($this->contentCacheService->detailCacheHeaders($ttl));
     }
 
     private function transformSeriesListItem(Series $series): array

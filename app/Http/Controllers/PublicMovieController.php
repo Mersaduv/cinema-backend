@@ -15,7 +15,9 @@ use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\MediaPathService;
+use App\Services\Cinema\PublicContentCacheService;
 use App\Services\Cinema\RelatedContentService;
+use App\Services\Cinema\WatchPlaybackService;
 use App\Services\TmdbService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -35,6 +37,8 @@ class PublicMovieController extends Controller
         private readonly CatalogCarouselService $catalogCarouselService,
         private readonly RelatedContentService $relatedContentService,
         private readonly ImagePresentationService $imagePresentationService,
+        private readonly PublicContentCacheService $contentCacheService,
+        private readonly WatchPlaybackService $watchPlaybackService,
     ) {
     }
 
@@ -165,21 +169,55 @@ class PublicMovieController extends Controller
             ], 404);
         }
 
-        $movie->load(['mediaAsset.variants', 'castMembers.person', 'crewMembers.person', 'genres']);
+        $cacheKey = $this->contentCacheService->movieDetailKey($movie->slug);
+        $ttl = $this->contentCacheService->detailTtl();
 
-        if (config('app.debug')) {
-            Log::info('Cinema public movie playback payload', [
-                'movie_id' => $movie->id,
-                'slug' => $movie->slug,
-            ]);
+        $payload = Cache::remember($cacheKey, $ttl, function () use ($movie) {
+            $movie->load(['mediaAsset.variants', 'castMembers.person', 'crewMembers.person', 'genres']);
+
+            if (config('app.debug')) {
+                Log::info('Cinema public movie detail cache miss', [
+                    'movie_id' => $movie->id,
+                    'slug' => $movie->slug,
+                ]);
+            }
+
+            return [
+                'movie' => $this->transformMovie($movie),
+            ];
+        });
+
+        return response()
+            ->json([
+                'success' => true,
+                'data' => $payload,
+            ])
+            ->withHeaders($this->contentCacheService->detailCacheHeaders($ttl));
+    }
+
+    public function playback(Movie $movie): JsonResponse
+    {
+        if ($movie->publish_status !== 'published') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Movie is not published.',
+            ], 404);
         }
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'movie' => $this->transformMovie($movie),
-            ],
-        ]);
+        $ttl = $this->contentCacheService->watchTtl();
+        $payload = $this->watchPlaybackService->movieWatchPayload($movie->slug);
+
+        return response()
+            ->json([
+                'success' => true,
+                'data' => [
+                    'playback' => $payload,
+                ],
+            ])
+            ->withHeaders([
+                'Cache-Control' => 'private, max-age='.$ttl.', stale-while-revalidate=30',
+                'Vary' => 'Accept-Encoding, Authorization',
+            ]);
     }
 
     public function related(Request $request, Movie $movie): JsonResponse
@@ -189,9 +227,10 @@ class PublicMovieController extends Controller
         }
 
         $limit = min(max((int) $request->integer('limit', 12), 1), 12);
-        $cacheKey = 'related_movies_v1_'.$movie->id;
+        $cacheKey = $this->contentCacheService->relatedMoviesKey($movie->id);
+        $ttl = $this->contentCacheService->relatedTtl();
 
-        $movies = Cache::remember($cacheKey, 3600, function () use ($movie, $limit) {
+        $movies = Cache::remember($cacheKey, $ttl, function () use ($movie, $limit) {
             return $this->relatedContentService
                 ->relatedMovies($movie, $limit)
                 ->map(fn (Movie $item) => $this->transformMovieListItem($item))
@@ -204,7 +243,7 @@ class PublicMovieController extends Controller
                 'success' => true,
                 'data' => ['movies' => $movies],
             ])
-            ->header('Cache-Control', 'public, max-age=3600');
+            ->header('Cache-Control', 'public, max-age='.$ttl);
     }
 
     private function transformMovieListItem(Movie $movie): array

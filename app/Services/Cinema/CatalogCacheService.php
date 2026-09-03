@@ -110,6 +110,8 @@ class CatalogCacheService
         Cache::forget('filter_options');
         Cache::forget('filter_options_v2');
 
+        app(PublicContentCacheService::class)->forgetHomeCritical();
+
         $paths = array_values(array_filter(
             $nextPaths,
             fn ($path) => is_string($path) && filled($path),

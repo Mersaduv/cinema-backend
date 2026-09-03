@@ -16,7 +16,7 @@ use App\Http\Controllers\ContentViewController;
 use App\Http\Controllers\FilterOptionsController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\PersonController;
-use App\Http\Controllers\PublicContentRequestController;
+use App\Http\Controllers\PublicHomeController;
 use App\Http\Controllers\PublicTicketController;
 use App\Http\Controllers\PublicCollectionController;
 use App\Http\Controllers\PublicMovieController;
@@ -60,15 +60,18 @@ Route::post('/staff/login', [AuthController::class, 'staffLogin']);
 // Public catalog/search (basic bot & burst protection)
 Route::middleware('throttle:90,1')->group(function () {
     Route::get('/filter-options', FilterOptionsController::class);
+    Route::get('/home/critical', [PublicHomeController::class, 'critical']);
     Route::get('/search', SearchController::class);
 
     Route::get('/movies', [PublicMovieController::class, 'index']);
     Route::get('/movies/{movie:slug}', [PublicMovieController::class, 'show']);
+    Route::get('/movies/{movie:slug}/playback', [PublicMovieController::class, 'playback']);
     Route::get('/movies/{movie:slug}/related', [PublicMovieController::class, 'related']);
     Route::get('/movies/{movie:slug}/reviews', [PublicReviewController::class, 'movieReviews']);
 
     Route::get('/series', [PublicSeriesController::class, 'index']);
     Route::get('/series/{series:slug}', [PublicSeriesController::class, 'show']);
+    Route::get('/series/{series:slug}/playback', [PublicSeriesController::class, 'playback']);
     Route::get('/series/{series:slug}/related', [PublicSeriesController::class, 'related']);
     Route::get('/series/{series:slug}/episodes', [PublicSeriesController::class, 'episodes']);
     Route::get('/series/{series:slug}/reviews', [PublicReviewController::class, 'seriesReviews']);

@@ -22,6 +22,8 @@ use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\GenreAlignmentService;
 use App\Services\Cinema\GenreCatalogService;
+use App\Services\Cinema\NextPublicCacheRevalidationService;
+use App\Services\Cinema\PublicContentCacheService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaSynopsisHelper;
 use App\Support\CinemaValidation;
@@ -1526,6 +1528,33 @@ class AdminMovieController extends Controller
             $extraPaths,
             fn ($path) => is_string($path) && filled($path),
         ));
+
+        foreach ($paths as $path) {
+            if (preg_match('#/movies/([^/]+)#', $path, $matches) !== 1) {
+                continue;
+            }
+
+            $movie = Movie::query()->where('slug', $matches[1])->first();
+            if ($movie) {
+                app(PublicContentCacheService::class)->forgetMovie($movie->slug, $movie->id);
+            }
+        }
+
+        $primarySlug = null;
+        $previousSlug = null;
+        foreach ($paths as $path) {
+            if (preg_match('#/movies/([^/]+)#', $path, $matches) === 1) {
+                if ($primarySlug === null) {
+                    $primarySlug = $matches[1];
+                } else {
+                    $previousSlug = $matches[1];
+                }
+            }
+        }
+
+        if ($primarySlug !== null) {
+            app(NextPublicCacheRevalidationService::class)->revalidateMovie($primarySlug, $previousSlug);
+        }
 
         $this->catalogCacheService->scheduleRebuildAfterContentChange($paths);
     }
