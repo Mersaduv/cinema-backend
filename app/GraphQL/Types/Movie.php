@@ -9,6 +9,8 @@ use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\ImagePresentationService;
 use App\Support\ContentMetadataOptions;
 use App\Services\TmdbService;
+use GraphQL\Type\Definition\ResolveInfo;
+use Nuwave\Lighthouse\Support\Contracts\GraphQLContext;
 
 final class Movie
 {
@@ -135,9 +137,15 @@ final class Movie
      *   gallery: list<string>
      * }
      */
-    public function details(MovieModel $movie): array
-    {
+    public function details(
+        MovieModel $movie,
+        array $args,
+        GraphQLContext $context,
+        ResolveInfo $resolveInfo,
+    ): array {
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+        $selection = $resolveInfo->getFieldSelection(1);
+        $includeActors = array_key_exists('actors', $selection);
 
         return [
             'rating' => ($value = data_get($metadata, 'tmdb.rating')) !== null ? (float) $value : null,
@@ -172,18 +180,20 @@ final class Movie
             'runtime_minutes' => ($runtime = data_get($metadata, 'tmdb.runtime_minutes')) !== null ? (int) $runtime : null,
             // Cast read path: prefer normalized `movie_cast` rows; fall back to legacy metadata JSON
             // when SyncMoviePersonCreditsJob has not completed yet (see cinema:audit-cast-consistency).
-            'actors' => $this->resolvePublicActors($movie, $metadata),
-            'gallery' => collect([
-                $this->mediaUrlHelper->resolveManagedOrExternalUrl(
-                    null,
-                    data_get($metadata, 'tmdb.backdrop_url'),
-                ),
-                $this->posterUrl($movie),
-            ])
-                ->filter(fn ($item) => filled($item))
-                ->unique()
-                ->values()
-                ->all(),
+            'actors' => $includeActors ? $this->resolvePublicActors($movie, $metadata) : [],
+            'gallery' => array_key_exists('gallery', $selection)
+                ? collect([
+                    $this->mediaUrlHelper->resolveManagedOrExternalUrl(
+                        null,
+                        data_get($metadata, 'tmdb.backdrop_url'),
+                    ),
+                    $this->posterUrl($movie),
+                ])
+                    ->filter(fn ($item) => filled($item))
+                    ->unique()
+                    ->values()
+                    ->all()
+                : [],
         ];
     }
 

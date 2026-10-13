@@ -125,21 +125,11 @@ class ContentPipelineLauncher
             return 'idle';
         }
 
-        $scheduledInput = $intendedPublishStatus === 'scheduled'
-            ? ($validated['scheduled_for'] ?? $series->scheduled_for)
-            : null;
-
+        // Series publish does not require episode mp4/hls. Keep the intended
+        // publish status immediately and enrich images/credits in the background.
         $metadata = is_array($series->metadata) ? $series->metadata : [];
         $metadata['pipeline']['intended_publish_status'] = $intendedPublishStatus;
-
-        $series->update([
-            'metadata' => $metadata,
-            'publish_status' => 'draft',
-            'scheduled_for' => $intendedPublishStatus === 'scheduled'
-                ? $this->publishScheduleService->resolvePublishState('scheduled', $scheduledInput)['scheduled_for']
-                : $series->scheduled_for,
-            'published_at' => null,
-        ]);
+        $series->update(['metadata' => $metadata]);
 
         $taskKeys = $this->seriesTaskKeys($validated);
         $pipeline = $this->pipelineOrchestrator->open(

@@ -25,6 +25,33 @@ class CinemaSynopsisHelperTest extends TestCase
         $this->assertSame('English-only season overview.', $result['synopsis_en']);
     }
 
+    public function test_localize_preserves_admin_primary_text_when_translation_unavailable(): void
+    {
+        $translation = Mockery::mock(OverviewTranslationService::class);
+        $translation->shouldReceive('translateEnglishOverviewToPersian')->never();
+
+        $helper = new CinemaSynopsisHelper($translation);
+
+        $result = $helper->localizeContentSynopsis(
+            'A crew follows a signal through a failing city.',
+            null,
+            autoTranslate: false,
+        );
+
+        $this->assertSame('A crew follows a signal through a failing city.', $result['synopsis']);
+        $this->assertSame('A crew follows a signal through a failing city.', $result['synopsis_en']);
+    }
+
+    public function test_localize_preserves_persian_admin_text(): void
+    {
+        $helper = new CinemaSynopsisHelper(Mockery::mock(OverviewTranslationService::class));
+
+        $result = $helper->localizeContentSynopsis('خلاصهٔ فارسی سریال تست', null);
+
+        $this->assertSame('خلاصهٔ فارسی سریال تست', $result['synopsis']);
+        $this->assertNull($result['synopsis_en']);
+    }
+
     public function test_localize_season_or_episode_translates_when_persian_missing(): void
     {
         $translation = Mockery::mock(OverviewTranslationService::class);

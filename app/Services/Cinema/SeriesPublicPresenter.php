@@ -8,6 +8,7 @@ use App\Models\SeriesCast;
 use App\Models\SeriesCrew;
 use App\Models\SeriesEpisode;
 use App\Models\SeriesSeason;
+use App\Support\AgeRating;
 use App\Support\ContentMetadataOptions;
 use App\Services\TmdbService;
 
@@ -48,23 +49,59 @@ class SeriesPublicPresenter
     }
 
     /**
-     * Full overview for detail page — built once per request (no GraphQL @hasMany fan-out).
+     * Overview for detail page. Pass $include to skip expensive cast/crew/image work
+     * when GraphQL clients only selected critical/meta fields.
      *
+     * @param  array{
+     *   cast?: bool,
+     *   crew?: bool,
+     *   seasons?: bool,
+     *   details?: bool,
+     *   details_actors?: bool,
+     *   details_gallery?: bool,
+     *   genre_tags?: bool,
+     *   poster_image?: bool,
+     *   backdrop_image?: bool,
+     *   has_subtitle?: bool,
+     *   has_dubbed?: bool
+     * }|null  $include  null = full payload (REST / preview)
      * @return array<string, mixed>
      */
-    public function overview(Series $series): array
+    public function overview(Series $series, ?array $include = null): array
     {
-        $metadata = is_array($series->metadata) ? $series->metadata : [];
-        $details = $this->details($series);
-        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
-        $backdropImage = $this->imagePresentationService->seriesBackdropImage($metadata);
+        $include = $include ?? [
+            'cast' => true,
+            'crew' => true,
+            'seasons' => true,
+            'details' => true,
+            'details_actors' => true,
+            'details_gallery' => true,
+            'genre_tags' => true,
+            'poster_image' => true,
+            'backdrop_image' => true,
+            'has_subtitle' => true,
+            'has_dubbed' => true,
+        ];
 
-        return [
+        $metadata = is_array($series->metadata) ? $series->metadata : [];
+        $needsPeople = ($include['cast'] ?? false) || ($include['details_actors'] ?? false);
+        $castRows = $needsPeople ? $this->castRows($series) : [];
+
+        $posterImage = ($include['poster_image'] ?? false)
+            ? $this->imagePresentationService->seriesPosterImage($metadata)
+            : null;
+        $backdropImage = ($include['backdrop_image'] ?? false)
+            ? $this->imagePresentationService->seriesBackdropImage($metadata)
+            : null;
+
+        $payload = [
             'id' => (string) $series->id,
             'slug' => $series->slug,
             'title' => $series->title,
             'original_title' => $series->original_title,
-            'synopsis' => $series->synopsis,
+            'synopsis' => $series->synopsis
+                ?: data_get($metadata, 'tmdb.synopsis_en')
+                ?: data_get($metadata, 'tmdb.synopsis_fa'),
             'first_air_date' => $series->first_air_date?->toDateString(),
             'last_air_date' => $series->last_air_date?->toDateString(),
             'release_year' => $series->release_year,
@@ -75,14 +112,6 @@ class SeriesPublicPresenter
             'number_of_episodes' => $series->number_of_episodes,
             'network' => $series->network,
             'provider_name' => $series->provider_name ?: $series->network,
-            'genre_tags' => collect($this->genreCatalogService->serializeGenres($series->genres))
-                ->map(fn (array $genre) => [
-                    'id' => (string) $genre['id'],
-                    'slug' => (string) $genre['slug'],
-                    'name' => (string) $genre['name'],
-                ])
-                ->values()
-                ->all(),
             'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
             'poster_blur_url' => data_get($posterImage, 'blur'),
             'poster_srcset' => data_get($posterImage, 'srcset_string'),
@@ -92,7 +121,7 @@ class SeriesPublicPresenter
             'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
             'backdrop_image' => $backdropImage,
             'trailer_url' => $series->trailer_url,
-            'age_rating' => $series->age_rating,
+            'age_rating' => AgeRating::normalize($series->age_rating),
             'meta_title' => data_get($metadata, 'seo.meta_title'),
             'meta_description' => data_get($metadata, 'seo.meta_description'),
             'content_warnings' => ContentMetadataOptions::filterAllowedList(
@@ -103,23 +132,64 @@ class SeriesPublicPresenter
                 data_get($metadata, 'quality_badges'),
                 ContentMetadataOptions::QUALITY_BADGES,
             ),
-            'has_subtitle' => $this->hasSubtitle($series),
-            'has_dubbed' => $this->hasDubbed($series),
+            'has_subtitle' => ($include['has_subtitle'] ?? false) ? $this->hasSubtitle($series) : false,
+            'has_dubbed' => ($include['has_dubbed'] ?? false) ? $this->hasDubbed($series) : false,
             'total_seasons' => $series->relationLoaded('seasons')
                 ? ($series->seasons->count() ?: $series->number_of_seasons)
                 : $series->number_of_seasons,
-            'cast' => $this->castRows($series),
-            'crew' => $this->crewRows($series),
-            'seasons' => $series->seasons
-                ->map(fn (SeriesSeason $season) => [
-                    'id' => (string) $season->id,
-                    'season_number' => $season->season_number,
-                    'title' => $season->name,
+            'cast' => ($include['cast'] ?? false) ? $castRows : [],
+            'crew' => ($include['crew'] ?? false) ? $this->crewRows($series) : [],
+            'seasons' => ($include['seasons'] ?? false) && $series->relationLoaded('seasons')
+                ? $series->seasons
+                    ->map(fn (SeriesSeason $season) => [
+                        'id' => (string) $season->id,
+                        'season_number' => $season->season_number,
+                        'title' => $season->name,
+                    ])
+                    ->values()
+                    ->all()
+                : [],
+        ];
+
+        if ($include['genre_tags'] ?? false) {
+            $series->loadMissing('genres');
+            $payload['genre_tags'] = collect($this->genreCatalogService->serializeGenres($series->genres))
+                ->map(fn (array $genre) => [
+                    'id' => (string) $genre['id'],
+                    'slug' => (string) $genre['slug'],
+                    'name' => (string) $genre['name'],
                 ])
                 ->values()
-                ->all(),
-            'details' => $details,
-        ];
+                ->all();
+        } else {
+            $payload['genre_tags'] = [];
+        }
+
+        if ($include['details'] ?? false) {
+            $payload['details'] = $this->details(
+                $series,
+                includeActors: (bool) ($include['details_actors'] ?? false),
+                includeGallery: (bool) ($include['details_gallery'] ?? false),
+                precomputedCastRows: $castRows,
+            );
+        } else {
+            $payload['details'] = [
+                'backdrop_url' => null,
+                'rating' => null,
+                'original_language' => null,
+                'creators' => [],
+                'directors' => [],
+                'writers' => [],
+                'genres' => [],
+                'languages' => [],
+                'countries' => [],
+                'network' => null,
+                'actors' => [],
+                'gallery' => [],
+            ];
+        }
+
+        return $payload;
     }
 
     /**
@@ -156,10 +226,15 @@ class SeriesPublicPresenter
     }
 
     /**
+     * @param  list<array<string, mixed>>  $precomputedCastRows
      * @return array<string, mixed>
      */
-    public function details(Series $series): array
-    {
+    public function details(
+        Series $series,
+        bool $includeActors = true,
+        bool $includeGallery = true,
+        array $precomputedCastRows = [],
+    ): array {
         $metadata = is_array($series->metadata) ? $series->metadata : [];
 
         return [
@@ -173,8 +248,10 @@ class SeriesPublicPresenter
             'languages' => array_values(data_get($metadata, 'tmdb.languages', []) ?: []),
             'countries' => array_values(data_get($metadata, 'tmdb.countries', []) ?: []),
             'network' => $series->provider_name ?: $series->network ?: data_get($metadata, 'tmdb.network'),
-            'actors' => $this->actorRows($series, $metadata),
-            'gallery' => $this->gallery($series, $metadata),
+            'actors' => $includeActors
+                ? $this->actorRows($series, $metadata, $precomputedCastRows)
+                : [],
+            'gallery' => $includeGallery ? $this->gallery($series, $metadata) : [],
         ];
     }
 
@@ -192,7 +269,7 @@ class SeriesPublicPresenter
 
     public function hasSubtitle(Series $series): bool
     {
-        if (isset($series->has_subtitle)) {
+        if (array_key_exists('has_subtitle', $series->getAttributes())) {
             return (bool) $series->has_subtitle;
         }
 
@@ -201,7 +278,7 @@ class SeriesPublicPresenter
 
     public function hasDubbed(Series $series): bool
     {
-        if (isset($series->has_dubbed)) {
+        if (array_key_exists('has_dubbed', $series->getAttributes())) {
             return (bool) $series->has_dubbed;
         }
 
@@ -262,29 +339,36 @@ class SeriesPublicPresenter
             : $series->crewMembers()->with('person')->get();
 
         return $rows
-            ->map(fn (SeriesCrew $row) => [
-                'name' => $row->person?->name,
-                'slug' => $row->person?->slug,
-                'job' => $row->job,
-                'department' => $row->department,
-                'profile_url' => $row->person
-                    ? $this->imagePresentationService->resolvePersonProfileUrl($row->person)
-                    : null,
-                'profile_blur_url' => data_get($row->person ? $this->imagePresentationService->personProfileImage($row->person) : null, 'blur'),
-                'profile_srcset' => data_get($row->person ? $this->imagePresentationService->personProfileImage($row->person) : null, 'srcset_string'),
-                'profile_image' => $row->person ? $this->imagePresentationService->personProfileImage($row->person) : null,
-            ])
+            ->map(function (SeriesCrew $row) {
+                $person = $row->person;
+                $profileImage = $person ? $this->imagePresentationService->personProfileImage($person) : null;
+                $profileUrl = $person
+                    ? $this->imagePresentationService->resolvePersonProfileUrl($person)
+                    : null;
+
+                return [
+                    'name' => $person?->name,
+                    'slug' => $person?->slug,
+                    'job' => $row->job,
+                    'department' => $row->department,
+                    'profile_url' => $profileUrl,
+                    'profile_blur_url' => data_get($profileImage, 'blur'),
+                    'profile_srcset' => data_get($profileImage, 'srcset_string'),
+                    'profile_image' => $profileImage,
+                ];
+            })
             ->values()
             ->all();
     }
 
     /**
      * @param  array<string, mixed>  $metadata
+     * @param  list<array<string, mixed>>  $precomputedCastRows
      * @return list<array<string, mixed>>
      */
-    private function actorRows(Series $series, array $metadata): array
+    private function actorRows(Series $series, array $metadata, array $precomputedCastRows = []): array
     {
-        $fromCast = collect($this->castRows($series))
+        $fromCast = collect($precomputedCastRows !== [] ? $precomputedCastRows : $this->castRows($series))
             ->map(fn (array $row) => [
                 'name' => $row['name'] ?? null,
                 'character' => $row['character_name'] ?? null,
@@ -407,10 +491,6 @@ class SeriesPublicPresenter
         ];
     }
 
-    /**
-     * @param  array<string, mixed>  $metadata
-     * @return list<string>
-     */
     private function managedImageUrl(mixed $url): ?string
     {
         if (! filled($url)) {
@@ -455,7 +535,7 @@ class SeriesPublicPresenter
             $seasonHlsBase = data_get($seasonMetadata, 'playback.hls_base_url');
             $episodeMetadata = is_array($episode->metadata) ? $episode->metadata : [];
 
-            if (! filled($episode->hls_url) && ! filled($seriesHlsBase)) {
+            if (! filled($episode->hls_url) && ! filled($seriesHlsBase) && ! filled($seasonHlsBase)) {
                 return false;
             }
 

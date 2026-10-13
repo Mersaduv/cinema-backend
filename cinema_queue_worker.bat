@@ -53,7 +53,7 @@ if not exist "%LOG_FILE%" type nul > "%LOG_FILE%"
   echo %DATE% %TIME% wrapper > "%PID_FILE%"
 
   >> "%LOG_FILE%" echo [%date% %time%] Starting cinema queue worker...
-  "%PHP_BIN%" "%ARTISAN%" queue:work database --queue=high,default,low,media-processing --sleep=3 --tries=3 --timeout=180 --max-time=3600 --memory=512 >> "%LOG_FILE%" 2>&1
+  "%PHP_BIN%" "%ARTISAN%" queue:work database --queue=high,default --sleep=3 --tries=3 --timeout=180 --max-time=3600 --memory=512 >> "%LOG_FILE%" 2>&1
   set "EXIT_CODE=!ERRORLEVEL!"
 
   >> "%LOG_FILE%" echo [%date% %time%] Worker exited with code !EXIT_CODE!. Restarting in 5 seconds...

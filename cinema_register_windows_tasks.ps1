@@ -14,9 +14,11 @@ $ErrorActionPreference = 'Stop'
 $AppDir = 'D:\sites\cinema\new-cinema-api'
 $WorkerVbs = Join-Path $AppDir 'cinema_queue_worker_hidden.vbs'
 $WorkerBat = Join-Path $AppDir 'cinema_queue_worker.bat'
+$LowWorkerVbs = Join-Path $AppDir 'cinema_queue_worker_low_hidden.vbs'
+$LowWorkerBat = Join-Path $AppDir 'cinema_queue_worker_low.bat'
 $SchedulerBat = Join-Path $AppDir 'cinema_task_scheduler.bat'
 
-foreach ($path in @($WorkerVbs, $WorkerBat, $SchedulerBat)) {
+foreach ($path in @($WorkerVbs, $WorkerBat, $LowWorkerVbs, $LowWorkerBat, $SchedulerBat)) {
   if (-not (Test-Path -LiteralPath $path)) {
     throw "Missing required file: $path"
   }
@@ -67,6 +69,15 @@ Register-CinemaTask `
   -Triggers @($workerTrigger) `
   -MultipleInstances ([Microsoft.PowerShell.Cmdletization.GeneratedTypes.ScheduledTask.MultipleInstancesEnum]::IgnoreNew)
 
+# --- 1b) Low-priority worker (person images / cache / revalidate) ---
+Register-CinemaTask `
+  -TaskName 'Cinema Queue Worker Low' `
+  -Execute 'wscript.exe' `
+  -Arguments "//B `"$LowWorkerVbs`"" `
+  -WorkingDirectory $AppDir `
+  -Triggers @($workerTrigger) `
+  -MultipleInstances ([Microsoft.PowerShell.Cmdletization.GeneratedTypes.ScheduledTask.MultipleInstancesEnum]::IgnoreNew)
+
 # --- 2) Watchdog every 1 minute (also at startup) ---
 $watchdogTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(1) `
   -RepetitionInterval (New-TimeSpan -Minutes 1) `
@@ -83,6 +94,7 @@ Register-CinemaTask `
 
 # Start both now
 Start-ScheduledTask -TaskName 'Cinema Queue Worker'
+Start-ScheduledTask -TaskName 'Cinema Queue Worker Low'
 Start-Sleep -Seconds 3
 Start-ScheduledTask -TaskName 'Cinema Scheduler Watchdog'
 
@@ -92,7 +104,7 @@ $running = ($LASTEXITCODE -eq 0)
 
 Write-Host ''
 Write-Host '=== Status ==='
-Get-ScheduledTask -TaskName 'Cinema Queue Worker', 'Cinema Scheduler Watchdog' |
+Get-ScheduledTask -TaskName 'Cinema Queue Worker', 'Cinema Queue Worker Low', 'Cinema Scheduler Watchdog' |
   ForEach-Object {
     $info = $_ | Get-ScheduledTaskInfo
     [PSCustomObject]@{

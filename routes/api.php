@@ -166,6 +166,7 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin,media,support'])->prefix
     Route::middleware('permission:delete_movies')->delete('/movies/{movie}', [AdminMovieController::class, 'destroy']);
 
     Route::middleware('permission:view_series,create_series,edit_series')->get('/series/check-slug', [AdminSeriesController::class, 'checkSlug']);
+    Route::middleware('permission:view_series,create_series,edit_series')->get('/series/check-tmdb', [AdminSeriesController::class, 'checkTmdbId']);
     Route::middleware('permission:view_series')->get('/series', [AdminSeriesController::class, 'index']);
     Route::middleware('permission:view_series')->get('/series/options', [AdminSeriesController::class, 'options']);
     Route::middleware('permission:create_series')->post('/series', [AdminSeriesController::class, 'store']);

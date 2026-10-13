@@ -97,7 +97,7 @@ class PipelineOrchestrator
             return;
         }
 
-        DB::table('content_pipeline_tasks')
+        $updated = DB::table('content_pipeline_tasks')
             ->where('pipeline_id', $pipelineId)
             ->where('task_key', $taskKey)
             ->whereNotIn('status', ['completed', 'failed', 'skipped'])
@@ -107,6 +107,12 @@ class PipelineOrchestrator
                 'result_summary' => json_encode($resultSummary),
                 'updated_at' => now(),
             ]);
+
+        if ($updated === 0) {
+            $this->checkPipelineCompletion($pipelineId);
+
+            return;
+        }
 
         ContentPipeline::query()
             ->where('id', $pipelineId)
@@ -121,15 +127,23 @@ class PipelineOrchestrator
             return;
         }
 
-        DB::table('content_pipeline_tasks')
+        $updated = DB::table('content_pipeline_tasks')
             ->where('pipeline_id', $pipelineId)
             ->where('task_key', $taskKey)
+            ->whereNotIn('status', ['completed', 'failed', 'skipped'])
             ->update([
                 'status' => 'skipped',
                 'completed_at' => now(),
                 'result_summary' => json_encode($resultSummary),
                 'updated_at' => now(),
             ]);
+
+        // Ghost-skip (task not in pipeline) must not inflate completed_tasks.
+        if ($updated === 0) {
+            $this->checkPipelineCompletion($pipelineId);
+
+            return;
+        }
 
         ContentPipeline::query()
             ->where('id', $pipelineId)
@@ -183,17 +197,24 @@ class PipelineOrchestrator
         DB::transaction(function () use ($pipelineId): void {
             $pipeline = ContentPipeline::query()->lockForUpdate()->find($pipelineId);
 
-            if (! $pipeline || $pipeline->status !== 'running') {
+            if (! $pipeline || ! in_array($pipeline->status, ['pending', 'running'], true)) {
                 return;
             }
 
-            if ($pipeline->completed_tasks < $pipeline->total_tasks) {
+            // Count terminal tasks from rows (authoritative) to avoid counter drift.
+            $terminalCount = (int) DB::table('content_pipeline_tasks')
+                ->where('pipeline_id', $pipelineId)
+                ->whereIn('status', ['completed', 'failed', 'skipped'])
+                ->count();
+
+            if ($terminalCount < (int) $pipeline->total_tasks) {
                 return;
             }
 
             $pipeline->update([
                 'status' => 'completed',
                 'completed_at' => now(),
+                'completed_tasks' => $terminalCount,
             ]);
 
             $this->updateEntityPipelineStatus($pipeline->entity_type, $pipeline->entity_id, 'completed');

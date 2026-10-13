@@ -389,7 +389,7 @@ class PublicSeriesController extends Controller
             'backdrop_srcset' => data_get($backdropImage, 'srcset_string'),
             'backdrop_image' => $backdropImage,
             'trailer_url' => $series->trailer_url,
-            'age_rating' => $series->age_rating,
+            'age_rating' => \App\Support\AgeRating::normalize($series->age_rating),
             'content_warnings' => ContentMetadataOptions::filterAllowedList(
                 data_get($metadata, 'content_warnings'),
                 ContentMetadataOptions::CONTENT_WARNINGS,
@@ -536,14 +536,18 @@ class PublicSeriesController extends Controller
             $videoUrl = \App\Support\ProgressiveVideoUrl::normalize($episode->video_url)
                 ?? (filled($episode->video_url) ? trim((string) $episode->video_url) : null);
         } elseif ($sourceMethod !== 'embed') {
-            $resolved = $this->seriesHlsPathService->resolveEpisodeHlsUrl(
-                $seriesHlsBase,
-                $seasonHlsBase,
-                $episode->hls_url,
-                $episode->season_number,
-                $episode->episode_number,
-            );
-            $hlsUrl = $resolved['hls_url'] ?? null;
+            // Only expose HLS when the episode is actually playable — never invent
+            // a path from hls_base alone (that made the UI look playable then 404).
+            if ($this->episodeIsPubliclyPlayable($episode, $seriesHlsBase, $seasonHlsBase)) {
+                $resolved = $this->seriesHlsPathService->resolveEpisodeHlsUrl(
+                    $seriesHlsBase,
+                    $seasonHlsBase,
+                    $episode->hls_url,
+                    $episode->season_number,
+                    $episode->episode_number,
+                );
+                $hlsUrl = $resolved['hls_url'] ?? null;
+            }
         }
 
         $episodeMetadata = is_array($episode->metadata) ? $episode->metadata : [];

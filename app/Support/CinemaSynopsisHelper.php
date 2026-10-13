@@ -74,6 +74,9 @@ final class CinemaSynopsisHelper
         ?string $englishSynopsis,
         bool $autoTranslate = true,
     ): array {
+        $rawPrimary = trim((string) ($persianSynopsis ?? ''));
+        $rawEnglish = trim((string) ($englishSynopsis ?? ''));
+
         $normalized = $this->normalizeStored($persianSynopsis, $englishSynopsis);
         $persian = $normalized['synopsis'];
         $english = $normalized['synopsis_en'];
@@ -82,14 +85,32 @@ final class CinemaSynopsisHelper
             return $normalized;
         }
 
-        if (!$autoTranslate || $english === null || trim($english) === '') {
-            return $normalized;
+        if ($autoTranslate && $english !== null && trim($english) !== '') {
+            $translated = $this->translation->translateEnglishOverviewToPersian($english);
+
+            if (is_string($translated) && trim($translated) !== '') {
+                return [
+                    'synopsis' => trim($translated),
+                    'synopsis_en' => $english,
+                ];
+            }
         }
 
-        $translated = $this->translation->translateEnglishOverviewToPersian($english);
+        // Keep the admin/editor primary field as-is when translation is unavailable,
+        // so manual/out-of-TMDB text is not wiped from the synopsis column.
+        if ($rawPrimary !== '') {
+            return [
+                'synopsis' => $rawPrimary,
+                'synopsis_en' => $english !== null && $english !== ''
+                    ? $english
+                    : ($rawEnglish !== ''
+                        ? $rawEnglish
+                        : (self::hasPersianScript($rawPrimary) ? null : $rawPrimary)),
+            ];
+        }
 
         return [
-            'synopsis' => $translated ?: $persian,
+            'synopsis' => $persian,
             'synopsis_en' => $english,
         ];
     }

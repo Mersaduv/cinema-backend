@@ -20,6 +20,7 @@ class SyncMovieCollectionJob implements ShouldQueue
         public array $metadata,
         public ?int $tmdbId = null,
     ) {
+        $this->onQueue('low');
     }
 
     public function handle(CollectionService $collectionService, CatalogCacheService $catalogCacheService): void

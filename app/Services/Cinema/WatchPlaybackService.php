@@ -114,12 +114,8 @@ class WatchPlaybackService
             $seriesHlsBase,
             $seasonHlsBase,
         );
-        abort_unless(
-            filled($playback['hls_url']) || filled($playback['video_url']) || filled($playback['embed_url']),
-            404,
-            'Episode playback is not available.',
-        );
 
+        // Missing episode play links must not 404/hang the watch page — return a soft empty payload.
         [$nextEpisode, $prevEpisode] = $this->resolveAdjacentEpisodes(
             $series,
             $episode,
@@ -149,6 +145,9 @@ class WatchPlaybackService
             ],
             'next_episode' => $nextEpisode,
             'prev_episode' => $prevEpisode,
+            'playback_available' => filled($playback['hls_url'])
+                || filled($playback['video_url'])
+                || filled($playback['embed_url']),
         ];
     }
 

@@ -37,6 +37,11 @@ class PublicContentCacheService
         return 'public_series_detail_v1_'.$slug.($lite ? '_lite' : '');
     }
 
+    public function seriesGraphqlOverviewKey(string $slug, string $selectionFingerprint): string
+    {
+        return 'gql_series_overview_v1_'.$slug.'_'.$selectionFingerprint;
+    }
+
     public function seriesEpisodesKey(string $slug): string
     {
         return 'public_series_episodes_v1_'.$slug;
@@ -88,7 +93,8 @@ class PublicContentCacheService
         Cache::forget($this->seriesDetailKey($slug, true));
         Cache::forget($this->seriesEpisodesKey($slug));
         Cache::forget($this->relatedSeriesKey($seriesId));
-        $this->forgetByPattern('watch_episode_v1_'.$slug.'_%');
+        // Pattern deletes (gql_/watch_episode_) are deferred to the catalog rebuild job
+        // so admin save is not blocked by database LIKE scans.
     }
 
     public function forgetHomeCritical(): void

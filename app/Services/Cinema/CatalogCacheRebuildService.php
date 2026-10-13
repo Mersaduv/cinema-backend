@@ -15,6 +15,7 @@ class CatalogCacheRebuildService
     public function rebuild(bool $warm = true): void
     {
         $this->catalogCache->invalidateImmediately();
+        app(PublicContentCacheService::class)->forgetHomeCritical();
         $this->backfillSeriesCounts();
 
         if ($warm) {

@@ -353,7 +353,7 @@ class PublicMovieController extends Controller
                 ->all(),
             'has_subtitle' => $movie->has_subtitle,
             'subtitle_source_url' => $subtitleUrl,
-            'age_rating' => $movie->age_rating,
+            'age_rating' => \App\Support\AgeRating::normalize($movie->age_rating),
             'content_warnings' => ContentMetadataOptions::filterAllowedList(
                 data_get($metadata, 'content_warnings'),
                 ContentMetadataOptions::CONTENT_WARNINGS,

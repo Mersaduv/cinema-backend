@@ -11,11 +11,12 @@ class RebuildCatalogCacheJob implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
 
-    public int $uniqueFor = 15;
+    /** Collapse burst rebuilds from consecutive admin saves. */
+    public int $uniqueFor = 120;
 
     public function __construct(public bool $warm = false)
     {
-        $this->onQueue('default');
+        $this->onQueue('low');
     }
 
     public function uniqueId(): string

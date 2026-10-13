@@ -17,6 +17,7 @@ class ProcessPersonImagesJob implements ShouldQueue
         public readonly int $personId,
         public readonly ?string $sourceUrl = null,
     ) {
+        $this->onQueue('low');
     }
 
     public function handle(ContentImageIngestionService $contentImageIngestionService): void

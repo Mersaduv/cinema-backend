@@ -32,11 +32,16 @@ class CatalogFilterQuery
         $search = trim((string) $request->string('search'));
         if ($search !== '') {
             $term = '%'.$search.'%';
-            $query->where(function (Builder $builder) use ($term): void {
+            $query->where(function (Builder $builder) use ($term, $table): void {
                 $builder
                     ->where('title', 'like', $term)
                     ->orWhere('original_title', 'like', $term)
-                    ->orWhere('synopsis', 'like', $term);
+                    ->orWhere('synopsis', 'like', $term)
+                    ->orWhere('slug', 'like', $term);
+
+                if ($this->hasColumn($table, 'network')) {
+                    $builder->orWhere('network', 'like', $term);
+                }
             });
         }
 
@@ -95,11 +100,9 @@ class CatalogFilterQuery
 
         $ageRating = trim((string) $request->string('age_rating'));
         if ($ageRating !== '') {
-            if ($this->hasColumn($table, 'content_rating')) {
-                $query->where('content_rating', $ageRating);
-            } else {
-                $query->where('age_rating', $ageRating);
-            }
+            $aliases = $this->ageRatingFilterAliases($ageRating);
+            $column = $this->hasColumn($table, 'content_rating') ? 'content_rating' : 'age_rating';
+            $query->whereIn($column, $aliases);
         }
 
         $minRating = $request->input('min_rating');
@@ -112,7 +115,9 @@ class CatalogFilterQuery
             $query->where($table.'.is_featured', true);
         }
 
-        return $this->applySort($query, $sort, $table);
+        $adminListDefault = ! $respectPublicVisibility;
+
+        return $this->applySort($query, $sort, $table, $adminListDefault);
     }
 
     /**
@@ -357,13 +362,27 @@ class CatalogFilterQuery
     /**
      * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
      */
-    public function applySort(Builder $query, string $sort, string $table): Builder
-    {
+    public function applySort(
+        Builder $query,
+        string $sort,
+        string $table,
+        bool $adminListDefault = false,
+    ): Builder {
         $sort = strtolower(trim($sort));
 
         if ($sort === '') {
-            // Admin default "جدیدترین" and any empty sort → newest created first.
-            return $query->reorder()->orderByDesc('created_at')->orderByDesc('id');
+            // Admin "جدیدترین": recently updated/published first so late publishes surface.
+            // Public empty sort stays published_at (same as newest).
+            if ($adminListDefault) {
+                return $query->reorder()
+                    ->orderByDesc('updated_at')
+                    ->orderByDesc('published_at')
+                    ->orderByDesc('id');
+            }
+
+            return $query->reorder()
+                ->orderByDesc('published_at')
+                ->orderByDesc('id');
         }
 
         $query->reorder();
@@ -392,6 +411,8 @@ class CatalogFilterQuery
             'views_desc' => $this->hasColumn($table, 'views_count')
                 ? $query->orderByDesc('views_count')->orderByDesc('id')
                 : $query->orderByDesc('published_at')->orderByDesc('id'),
+            'created', 'created_desc' => $query->orderByDesc('created_at')->orderByDesc('id'),
+            'updated', 'updated_desc' => $query->orderByDesc('updated_at')->orderByDesc('published_at')->orderByDesc('id'),
             default => $query->orderByDesc('published_at')->orderByDesc('id'),
         };
     }
@@ -487,8 +508,12 @@ class CatalogFilterQuery
                 ? $this->applyKeysetCursor($query, $table, 'filter_rating', $sortValue, $cursorId, 'desc', 'desc')
                 : $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'desc', 'desc'),
             'newest', 'featured' => $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'desc', 'desc'),
-            // Empty / created (admin-style) — primary created_at DESC, id DESC
+            // Explicit created sort (admin option)
             'created', 'created_desc' => $this->applyKeysetCursor($query, $table, 'created_at', $sortValue, $cursorId, 'desc', 'desc'),
+            // Admin-style updated sort (admin list uses page pagination; this is for explicit sort=updated)
+            'updated', 'updated_desc' => $this->applyKeysetCursor($query, $table, 'updated_at', $sortValue, $cursorId, 'desc', 'desc'),
+            // Empty sort on public carousel is normalized to newest before cursor; keep published_at safe.
+            '' => $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'desc', 'desc'),
             // Trending uses multi-expression ORDER BY; id DESC tie-break remains stable enough for rails.
             default => $query->where($table.'.id', '<', $cursorId),
         };
@@ -568,6 +593,29 @@ class CatalogFilterQuery
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function ageRatingFilterAliases(string $ageRating): array
+    {
+        $canonical = preg_match('/^(\d{1,2})\+?$/', $ageRating, $matches) === 1
+            ? $matches[1]
+            : $ageRating;
+
+        $legacyByAge = [
+            '0' => ['0', '0+', 'G', 'TV-Y', 'TV-Y7', 'TV-G'],
+            '7' => ['7', '7+', 'PG', 'TV-PG', 'NR'],
+            '13' => ['13', '13+', 'PG-13', 'TV-14', '12', '12A'],
+            '16' => ['16', '16+', '15'],
+            '17' => ['17', '17+', 'R', 'TV-MA'],
+            '18' => ['18', '18+', 'NC-17', 'X', 'R18'],
+        ];
+
+        $aliases = $legacyByAge[$canonical] ?? [$ageRating, $canonical];
+
+        return array_values(array_unique(array_map('strval', $aliases)));
     }
 
     private function hasColumn(string $table, string $column): bool

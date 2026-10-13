@@ -25,7 +25,8 @@ final class ProgressiveVideoUrl
 
         $path = (string) (parse_url($trimmed, PHP_URL_PATH) ?? '');
 
-        if ($path === '' || preg_match('/\.(mp4|m4v|webm|mov)$/i', $path) !== 1) {
+        // cinema.af CDN commonly serves .mkv as progressive sources alongside .mp4.
+        if ($path === '' || preg_match('/\.(mp4|m4v|webm|mov|mkv|avi|ts)$/i', $path) !== 1) {
             return null;
         }
 

@@ -20,17 +20,15 @@ class OverviewTranslationServiceTest extends TestCase
         $this->assertNull($result);
     }
 
-    public function test_translate_uses_mymemory_by_default_and_cache(): void
+    public function test_translate_uses_google_first_in_auto_mode_and_cache(): void
     {
         config()->set('services.overview_translation.enabled', true);
         config()->set('services.overview_translation.driver', 'auto');
         Cache::flush();
 
         Http::fake([
-            'api.mymemory.translated.net/*' => Http::response([
-                'responseData' => [
-                    'translatedText' => 'خلاصهٔ فصل به فارسی.',
-                ],
+            'translate.google.com/*' => Http::response([
+                [['خلاصهٔ فصل به فارسی.', 'English season overview.']],
             ], 200),
         ]);
 
@@ -94,6 +92,92 @@ class OverviewTranslationServiceTest extends TestCase
         $this->assertSame(
             'خلاصهٔ فصل به فارسی.',
             $service->translateEnglishOverviewToPersian('English season overview.'),
+        );
+    }
+
+    public function test_translate_falls_back_across_google_endpoints_then_bing(): void
+    {
+        config()->set('services.overview_translation.enabled', true);
+        config()->set('services.overview_translation.driver', 'auto');
+        Cache::flush();
+
+        Http::fake(function (\Illuminate\Http\Client\Request $request) {
+            $url = $request->url();
+
+            if (str_contains($url, 'translate.google.com')) {
+                return Http::response('blocked', 429);
+            }
+
+            if (str_contains($url, 'clients5.google.com')) {
+                return Http::response('blocked', 429);
+            }
+
+            if (str_contains($url, 'translate.googleapis.com')) {
+                return Http::response('blocked', 429);
+            }
+
+            if (str_contains($url, 'www.bing.com/translator') && $request->method() === 'GET') {
+                return Http::response(
+                    'IG:"TESTIG123" data-iid="translator.5028" params_AbusePreventionHelper = [1710000000000,"TOKENABC",3600000]',
+                    200,
+                );
+            }
+
+            if (str_contains($url, 'www.bing.com/ttranslatev3')) {
+                return Http::response([
+                    [
+                        'translations' => [
+                            ['text' => 'خلاصهٔ فیلم به فارسی.', 'to' => 'fa'],
+                        ],
+                    ],
+                ], 200);
+            }
+
+            return Http::response(['unexpected' => true], 500);
+        });
+
+        $service = app(OverviewTranslationService::class);
+
+        $this->assertSame(
+            'خلاصهٔ فیلم به فارسی.',
+            $service->translateEnglishOverviewToPersian('English movie overview.'),
+        );
+    }
+
+    public function test_translate_falls_back_to_mymemory_when_google_and_bing_fail(): void
+    {
+        config()->set('services.overview_translation.enabled', true);
+        config()->set('services.overview_translation.driver', 'auto');
+        Cache::flush();
+
+        Http::fake(function (\Illuminate\Http\Client\Request $request) {
+            $url = $request->url();
+
+            if (
+                str_contains($url, 'translate.google.com')
+                || str_contains($url, 'clients5.google.com')
+                || str_contains($url, 'translate.googleapis.com')
+                || str_contains($url, 'www.bing.com')
+            ) {
+                return Http::response('fail', 503);
+            }
+
+            if (str_contains($url, 'api.mymemory.translated.net')) {
+                return Http::response([
+                    'responseData' => [
+                        'translatedText' => 'خلاصه از مای‌مموری.',
+                    ],
+                ], 200);
+            }
+
+            return Http::response(['unexpected' => true], 500);
+        });
+
+        $service = app(OverviewTranslationService::class);
+
+        $this->assertSame(
+            'خلاصه از مای‌مموری.',
+            $service->translateEnglishOverviewToPersian('English movie overview.'),
         );
     }
 }

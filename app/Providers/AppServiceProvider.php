@@ -10,6 +10,7 @@ use App\Observers\MovieObserver;
 use App\Observers\ReviewObserver;
 use App\Observers\SeriesEpisodeObserver;
 use App\Observers\SeriesObserver;
+use App\Services\Cinema\ImagePresentationService;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -23,7 +24,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // One instance per request so ImageAsset/disk lookups are memoized across cast/crew.
+        $this->app->singleton(ImagePresentationService::class);
     }
 
     /**

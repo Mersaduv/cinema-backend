@@ -30,6 +30,7 @@ class SyncSeriesPersonCreditsJob implements ShouldQueue
         public readonly ?int $tmdbId = null,
         public readonly ?int $pipelineId = null,
     ) {
+        $this->onQueue('high');
     }
 
     public function handle(PersonIngestionService $personIngestionService, TmdbService $tmdbService): void

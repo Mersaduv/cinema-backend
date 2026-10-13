@@ -187,7 +187,7 @@ class TmdbServiceTest extends TestCase
         $this->assertSame('English fallback overview.', $payload['synopsis']);
         $this->assertSame('https://www.youtube.com/watch?v=abc123', $payload['trailer_url']);
         $this->assertSame('tt1234567', $payload['imdb_id']);
-        $this->assertSame('PG-13', $payload['age_rating']);
+        $this->assertSame('13', $payload['age_rating']);
         $this->assertSame(['Director One'], $payload['directors']);
         $this->assertSame(['Writer One', 'Writer Two'], $payload['writers']);
         $this->assertSame('Released', $payload['production_status']);
@@ -470,7 +470,7 @@ class TmdbServiceTest extends TestCase
         $this->assertSame('Series overview', $payload['synopsis']);
         $this->assertSame('tt9813792', $payload['imdb_id']);
         $this->assertSame('414505', $payload['tvdb_id']);
-        $this->assertSame('R', $payload['age_rating']);
+        $this->assertSame('17', $payload['age_rating']);
         $this->assertSame('Returning Series', $payload['production_status']);
         $this->assertSame('Scripted', $payload['show_type']);
         $this->assertSame('MGM+', $payload['network']);

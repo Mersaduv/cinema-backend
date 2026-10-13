@@ -23,6 +23,7 @@ class ProcessSeriesImagesJob implements ShouldQueue
         public readonly array $payload = [],
         public readonly ?int $pipelineId = null,
     ) {
+        $this->onQueue('high');
     }
 
     public function handle(ContentImageIngestionService $contentImageIngestionService): void

@@ -11,7 +11,7 @@ class HomeCriticalAssemblyService
 {
     private const FEATURED_POOL = 8;
     private const RAIL_PER_PAGE = 6;
-    private const EDITORIAL_MAX = 2;
+    private const EDITORIAL_MAX = 8;
 
     /**
      * @return array<string, mixed>
@@ -22,8 +22,8 @@ class HomeCriticalAssemblyService
             'filter_options' => $this->filterOptionsPayload(),
             'latest_movies' => $this->movies(['sort' => 'release_year_desc', 'page' => 1, 'per_page' => self::FEATURED_POOL]),
             'latest_series' => $this->series(['sort' => 'release_year_desc', 'page' => 1, 'per_page' => self::FEATURED_POOL]),
-            'editorial_featured_movies' => $this->movies(['sort' => 'featured', 'page' => 1, 'per_page' => self::EDITORIAL_MAX + 1]),
-            'editorial_featured_series' => $this->series(['sort' => 'featured', 'page' => 1, 'per_page' => self::EDITORIAL_MAX + 1]),
+            'editorial_featured_movies' => $this->movies(['sort' => 'featured', 'page' => 1, 'per_page' => self::EDITORIAL_MAX]),
+            'editorial_featured_series' => $this->series(['sort' => 'featured', 'page' => 1, 'per_page' => self::EDITORIAL_MAX]),
             'hero_hybrid_movies' => $this->movies(['sort' => 'popular_hybrid', 'page' => 1, 'per_page' => self::FEATURED_POOL]),
             'hero_hybrid_series' => $this->series(['sort' => 'popular_hybrid', 'page' => 1, 'per_page' => self::FEATURED_POOL]),
             'trending_movies' => $this->movies(['sort' => 'trending', 'carousel' => '1', 'page' => 1, 'per_page' => self::RAIL_PER_PAGE]),

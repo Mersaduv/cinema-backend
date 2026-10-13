@@ -378,11 +378,15 @@ class ImageIngestionService
 
         $maxSize = (int) config('cinema_images.max_download_size', 15 * 1024 * 1024);
         $downloads = [];
+        $failedUrls = [];
 
         foreach ($urls as $url) {
             $response = $responses[$url] ?? null;
 
-            if ($response === null || ! $response->successful()) {
+            // Http::pool may return ConnectionException (or other Throwables) instead of Response.
+            if (! $response instanceof \Illuminate\Http\Client\Response || ! $response->successful()) {
+                $failedUrls[] = $url;
+
                 continue;
             }
 
@@ -390,6 +394,8 @@ class ImageIngestionService
                 $binary = (string) $response->body();
 
                 if ($binary === '' || strlen($binary) > $maxSize) {
+                    $failedUrls[] = $url;
+
                     continue;
                 }
 
@@ -407,8 +413,27 @@ class ImageIngestionService
                     'width' => $width,
                     'height' => $height,
                 ];
-            } catch (\Throwable) {
+            } catch (\Throwable $exception) {
+                Log::warning('Parallel image download parse failed; will retry sequentially.', [
+                    'url' => $url,
+                    'error' => $exception->getMessage(),
+                ]);
+                $failedUrls[] = $url;
+            }
+        }
+
+        foreach ($failedUrls as $url) {
+            if (isset($downloads[$url])) {
                 continue;
+            }
+
+            try {
+                $downloads[$url] = $this->downloadImage($url, $urlAllowSvg[$url] ?? false);
+            } catch (\Throwable $exception) {
+                Log::warning('Sequential image download retry failed.', [
+                    'url' => $url,
+                    'error' => $exception->getMessage(),
+                ]);
             }
         }
 

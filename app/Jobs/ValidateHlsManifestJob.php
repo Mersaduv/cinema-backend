@@ -23,6 +23,7 @@ class ValidateHlsManifestJob implements ShouldQueue
         public readonly ?string $subtitleSourcePath = null,
         public readonly ?int $pipelineId = null,
     ) {
+        $this->onQueue('high');
     }
 
     public function handle(HlsPackageInsightService $hlsPackageInsightService): void

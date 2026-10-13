@@ -10,6 +10,15 @@ use App\Models\Person;
  */
 class ImagePresentationService
 {
+    /** @var array<string, ImageAsset|null> */
+    private array $readyAssetByUrl = [];
+
+    /** @var array<int|string, bool> */
+    private array $assetExistsById = [];
+
+    /** @var array<string, bool> */
+    private array $usableUrlCache = [];
+
     public function __construct(
         private readonly ImageVariantUrlBuilder $variantUrlBuilder,
     ) {
@@ -247,14 +256,18 @@ class ImagePresentationService
 
     private function isUsablePreferredUrl(string $url): bool
     {
+        if (array_key_exists($url, $this->usableUrlCache)) {
+            return $this->usableUrlCache[$url];
+        }
+
         if (! $this->variantUrlBuilder->isManagedPublicUrl($url)) {
-            return true;
+            return $this->usableUrlCache[$url] = true;
         }
 
         $asset = $this->findReadyAssetByPublicUrl($url);
 
         if ($asset) {
-            return $this->assetFileExists($asset);
+            return $this->usableUrlCache[$url] = $this->assetFileExists($asset);
         }
 
         try {
@@ -263,15 +276,19 @@ class ImagePresentationService
             $path = explode('?', $path, 2)[0];
             $physical = app(ImageStorageService::class)->toPhysicalPath($path);
 
-            return is_file($physical);
+            return $this->usableUrlCache[$url] = is_file($physical);
         } catch (\Throwable) {
-            return false;
+            return $this->usableUrlCache[$url] = false;
         }
     }
 
     private function findReadyAssetByPublicUrl(string $url): ?ImageAsset
     {
-        return ImageAsset::query()
+        if (array_key_exists($url, $this->readyAssetByUrl)) {
+            return $this->readyAssetByUrl[$url];
+        }
+
+        return $this->readyAssetByUrl[$url] = ImageAsset::query()
             ->where('original_public_url', $url)
             ->where('status', 'ready')
             ->first();
@@ -279,6 +296,12 @@ class ImagePresentationService
 
     private function assetFileExists(ImageAsset $asset): bool
     {
+        $cacheKey = $asset->getKey() ?? ('url:'.(string) ($asset->original_public_url ?? ''));
+
+        if (array_key_exists($cacheKey, $this->assetExistsById)) {
+            return $this->assetExistsById[$cacheKey];
+        }
+
         $publicUrl = (string) ($asset->original_public_url ?? '');
 
         if ($publicUrl !== '') {
@@ -292,13 +315,14 @@ class ImagePresentationService
                     $asset->update(['physical_storage_path' => $physical]);
                 }
 
-                return true;
+                return $this->assetExistsById[$cacheKey] = true;
             }
 
-            return false;
+            return $this->assetExistsById[$cacheKey] = false;
         }
 
-        return filled($asset->physical_storage_path) && is_file((string) $asset->physical_storage_path);
+        return $this->assetExistsById[$cacheKey] = filled($asset->physical_storage_path)
+            && is_file((string) $asset->physical_storage_path);
     }
 
     private function resolveStoredPathUrl(?string $path): ?string

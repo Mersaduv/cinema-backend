@@ -21,7 +21,7 @@ class FilterOptionsController extends Controller
 
     public function __invoke(): JsonResponse
     {
-        $payload = Cache::remember('filter_options_v2', 86400, function (): array {
+        $payload = Cache::remember('filter_options_v3', 86400, function (): array {
             $this->referenceData->ensureCountriesLoaded();
 
             return [
@@ -31,7 +31,7 @@ class FilterOptionsController extends Controller
                 'countries' => $this->adminReferenceOptions->countries(),
                 'languages' => $this->adminReferenceOptions->languages(),
                 'release_years' => $this->releaseYears(),
-                'age_ratings' => ['G', 'PG', 'PG-13', 'R', 'NC-17', 'TV-MA', 'TV-14', 'TV-PG', 'TV-Y'],
+                'age_ratings' => ['0', '7', '13', '16', '17', '18'],
                 'content_types' => [
                     ['value' => 'movie', 'label' => 'فیلم'],
                     ['value' => 'series', 'label' => 'سریال'],
@@ -51,7 +51,7 @@ class FilterOptionsController extends Controller
         });
 
         if ($payload['countries'] === []) {
-            Cache::forget('filter_options_v2');
+            Cache::forget('filter_options_v3');
             $this->referenceData->ensureCountriesLoaded();
             $this->adminReferenceOptions->invalidate();
             $payload['countries'] = $this->adminReferenceOptions->countries();

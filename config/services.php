@@ -47,6 +47,8 @@ return [
     'tmdb' => [
         'api_key' => env('TMDB_API_KEY'),
         'access_token' => env('TMDB_ACCESS_TOKEN'),
+        'api_key_fallback' => env('TMDB_API_KEY_FALLBACK'),
+        'access_token_fallback' => env('TMDB_ACCESS_TOKEN_FALLBACK'),
         'base_url' => env('TMDB_BASE_URL', 'https://api.themoviedb.org/3'),
         'image_base_url' => env('TMDB_IMAGE_BASE_URL', 'https://image.tmdb.org/t/p'),
         'default_language' => env('TMDB_DEFAULT_LANGUAGE', 'fa-IR'),

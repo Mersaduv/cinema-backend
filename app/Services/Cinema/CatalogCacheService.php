@@ -110,7 +110,8 @@ class CatalogCacheService
         Cache::forget('filter_options');
         Cache::forget('filter_options_v2');
 
-        app(PublicContentCacheService::class)->forgetHomeCritical();
+        // home_critical keys are generation-scoped (home_critical_v1_g{N}); bumping
+        // generation above already orphans the previous entries — no LIKE wipe needed.
 
         $paths = array_values(array_filter(
             $nextPaths,

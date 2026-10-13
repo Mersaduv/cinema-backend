@@ -22,6 +22,40 @@ trait InteractsWithTmdbHttp
     }
 
     /**
+     * @return list<array{access_token: string, api_key: string}>
+     */
+    protected function tmdbCredentialSets(): array
+    {
+        $sets = [];
+        $seen = [];
+
+        foreach ([
+            [
+                'access_token' => trim((string) config('services.tmdb.access_token')),
+                'api_key' => trim((string) config('services.tmdb.api_key')),
+            ],
+            [
+                'access_token' => trim((string) config('services.tmdb.access_token_fallback')),
+                'api_key' => trim((string) config('services.tmdb.api_key_fallback')),
+            ],
+        ] as $set) {
+            if ($set['access_token'] === '' && $set['api_key'] === '') {
+                continue;
+            }
+
+            $fingerprint = $set['access_token'].'|'.$set['api_key'];
+            if (isset($seen[$fingerprint])) {
+                continue;
+            }
+
+            $seen[$fingerprint] = true;
+            $sets[] = $set;
+        }
+
+        return $sets;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     protected function requestCached(string $path, array $query = []): array
@@ -91,18 +125,21 @@ trait InteractsWithTmdbHttp
             return $results;
         }
 
+        $credentialSets = $this->tmdbCredentialSets();
+
+        if ($credentialSets === []) {
+            throw new RuntimeException('TMDB credentials are not configured.');
+        }
+
         for ($attempt = 1; $attempt <= self::TMDB_HTTP_RETRY_ATTEMPTS; $attempt++) {
             if ($pending === []) {
                 break;
             }
 
-            $accessToken = trim((string) config('services.tmdb.access_token'));
-            $apiKey = trim((string) config('services.tmdb.api_key'));
+            $creds = $credentialSets[($attempt - 1) % count($credentialSets)];
+            $accessToken = $creds['access_token'];
+            $apiKey = $creds['api_key'];
             $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
-
-            if ($accessToken === '' && $apiKey === '') {
-                throw new RuntimeException('TMDB credentials are not configured.');
-            }
 
             $responses = Http::pool(function (Pool $pool) use ($pending, $baseUrl, $accessToken, $apiKey) {
                 foreach ($pending as $key => [$path, $query]) {

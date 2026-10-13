@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Recover pipelines left "running" when the queue worker was down or a job vanished.
+ * Recover pipelines left pending/running when jobs vanished or the worker stalled.
  */
 class RecoverStuckPipelinesCommand extends Command
 {
@@ -46,6 +46,7 @@ class RecoverStuckPipelinesCommand extends Command
 
         $recovered = 0;
         $failed = 0;
+        $completed = 0;
 
         foreach ($pipelines as $pipeline) {
             $tasks = DB::table('content_pipeline_tasks')
@@ -53,13 +54,39 @@ class RecoverStuckPipelinesCommand extends Command
                 ->orderBy('id')
                 ->get();
 
-            $hasQueuedWork = $this->queueHasPendingWork();
-
-            if ($hasQueuedWork) {
-                $this->line("Pipeline #{$pipeline->id}: queue has pending jobs — waiting for worker.");
+            $terminal = $tasks->whereIn('status', ['completed', 'failed', 'skipped'])->count();
+            if ($tasks->isNotEmpty() && $terminal >= (int) $pipeline->total_tasks) {
+                $pipeline->update([
+                    'status' => 'completed',
+                    'completed_at' => now(),
+                    'completed_tasks' => $terminal,
+                ]);
+                DB::table($pipeline->entity_type === 'movie' ? 'movies' : 'series')
+                    ->where('id', $pipeline->entity_id)
+                    ->update(['pipeline_status' => 'completed']);
+                $completed++;
+                $this->info("Force-completed pipeline #{$pipeline->id} (all tasks terminal).");
 
                 continue;
             }
+
+            $pendingKeys = $tasks
+                ->whereIn('status', ['pending', 'running'])
+                ->pluck('task_key')
+                ->map(fn ($key) => (string) $key)
+                ->all();
+
+            // Only skip recover when THIS pipeline already has a waiting job.
+            if ($this->pipelineHasQueuedWork((int) $pipeline->id, $pipeline->entity_type, (int) $pipeline->entity_id)) {
+                $this->line("Pipeline #{$pipeline->id}: related jobs still queued — waiting for worker.");
+
+                continue;
+            }
+
+            $imageKeys = ['image_primary', 'image_actors', 'image_seasons', 'image_episodes'];
+            $creditKeys = ['credits_sync', 'bio_enrich'];
+            $needsImages = count(array_intersect($pendingKeys, $imageKeys)) > 0;
+            $needsCredits = count(array_intersect($pendingKeys, $creditKeys)) > 0;
 
             foreach ($tasks as $task) {
                 if (! in_array($task->status, ['pending', 'running'], true)) {
@@ -77,23 +104,22 @@ class RecoverStuckPipelinesCommand extends Command
                     );
                     $failed++;
                     $this->warn("Failed stuck critical task {$task->task_key} on pipeline #{$pipeline->id}");
-
-                    continue;
                 }
+            }
 
-                if ($this->redispatchTask($pipeline, (string) $task->task_key)) {
-                    if ($task->status === 'running') {
-                        DB::table('content_pipeline_tasks')
-                            ->where('id', $task->id)
-                            ->update([
-                                'status' => 'pending',
-                                'started_at' => null,
-                                'updated_at' => now(),
-                            ]);
-                    }
-                    $recovered++;
-                    $this->info("Re-dispatched {$task->task_key} for {$pipeline->entity_type}#{$pipeline->entity_id}");
-                }
+            $pipeline->refresh();
+            if (in_array($pipeline->status, ['failed', 'completed', 'cancelled'], true)) {
+                continue;
+            }
+
+            if ($needsImages && $this->redispatchTask($pipeline, 'image_primary')) {
+                $recovered++;
+                $this->info("Re-dispatched images for {$pipeline->entity_type}#{$pipeline->entity_id}");
+            }
+
+            if ($needsCredits && $this->redispatchTask($pipeline, 'credits_sync')) {
+                $recovered++;
+                $this->info("Re-dispatched credits for {$pipeline->entity_type}#{$pipeline->entity_id}");
             }
         }
 
@@ -101,16 +127,37 @@ class RecoverStuckPipelinesCommand extends Command
             'checked' => $pipelines->count(),
             'redispatched' => $recovered,
             'failed' => $failed,
+            'force_completed' => $completed,
         ]);
 
-        $this->info("Checked {$pipelines->count()} pipelines; redispatched={$recovered}, failed={$failed}");
+        $this->info(
+            "Checked {$pipelines->count()} pipelines; redispatched={$recovered}, failed={$failed}, force_completed={$completed}",
+        );
 
         return self::SUCCESS;
     }
 
-    private function queueHasPendingWork(): bool
+    private function pipelineHasQueuedWork(int $pipelineId, string $entityType, int $entityId): bool
     {
-        return DB::table('jobs')->exists();
+        $needles = [
+            "pipelineId\";i:{$pipelineId}",
+            $entityType === 'movie' ? "movieId\";i:{$entityId}" : "seriesId\";i:{$entityId}",
+        ];
+
+        return DB::table('jobs')
+            ->where(function ($query) use ($needles): void {
+                foreach ($needles as $needle) {
+                    $query->orWhere('payload', 'like', '%' . $needle . '%');
+                }
+            })
+            ->where(function ($query): void {
+                $query->where('payload', 'like', '%ProcessMovieImagesJob%')
+                    ->orWhere('payload', 'like', '%ProcessSeriesImagesJob%')
+                    ->orWhere('payload', 'like', '%SyncMoviePersonCreditsJob%')
+                    ->orWhere('payload', 'like', '%SyncSeriesPersonCreditsJob%')
+                    ->orWhere('payload', 'like', '%ValidateHlsManifestJob%');
+            })
+            ->exists();
     }
 
     private function redispatchTask(ContentPipeline $pipeline, string $taskKey): bool

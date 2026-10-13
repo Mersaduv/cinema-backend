@@ -92,7 +92,9 @@ class MovieDraftUpdateService
                 'subtitle_source_path' => array_key_exists('has_subtitle', $payload)
                     ? ((bool) $payload['has_subtitle'] ? $resolvedSubtitleSourcePath : null)
                     : $resolvedSubtitleSourcePath,
-                'age_rating' => array_key_exists('age_rating', $payload) ? ($payload['age_rating'] ?: null) : $movie->age_rating,
+                'age_rating' => array_key_exists('age_rating', $payload)
+                    ? \App\Support\AgeRating::normalize($payload['age_rating'] ? (string) $payload['age_rating'] : null)
+                    : $movie->age_rating,
                 'cast_members' => $this->resolveCastMembers($payload, $movie),
                 'media_folder' => $newMovieRelativeDirectory,
             ]);

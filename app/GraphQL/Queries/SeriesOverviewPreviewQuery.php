@@ -40,6 +40,7 @@ class SeriesOverviewPreviewQuery
             'seasons',
         ]);
 
-        return $this->presenter->overview($series->fresh());
+        // Do not fresh() — that drops eager loads and forces N+1 on cast/crew images.
+        return $this->presenter->overview($series);
     }
 }

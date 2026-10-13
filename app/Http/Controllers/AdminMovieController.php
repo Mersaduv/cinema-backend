@@ -22,7 +22,6 @@ use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\GenreAlignmentService;
 use App\Services\Cinema\GenreCatalogService;
-use App\Services\Cinema\NextPublicCacheRevalidationService;
 use App\Services\Cinema\PublicContentCacheService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaSynopsisHelper;
@@ -397,8 +396,10 @@ class AdminMovieController extends Controller
             'banner_url' => CinemaValidation::nullableImageOrUrl(),
             'logo_url' => CinemaValidation::nullableImageOrUrl(),
             'synopsis' => ['nullable', 'string'],
+            'synopsis_en' => ['nullable', 'string'],
             'age_rating' => ['nullable', 'string', 'max:50'],
             'release_year' => ['nullable', 'integer', 'between:1888,2100'],
+            'content_source' => ['nullable', Rule::in(['tmdb', 'manual'])],
             'tmdb_id' => ['nullable', 'integer', 'min:1'],
             'imdb_id' => ['nullable', 'string', 'max:32'],
             'tmdb_query' => ['nullable', 'string', 'max:255'],
@@ -406,7 +407,7 @@ class AdminMovieController extends Controller
             'popularity' => ['nullable', 'numeric', 'min:0'],
             'vote_count' => ['nullable', 'integer', 'min:0'],
             'original_language' => ['nullable', 'string', 'max:12'],
-            'runtime_minutes' => ['nullable', 'integer', 'min:1', 'max:999'],
+            'runtime_minutes' => ['nullable', 'integer', 'min:0', 'max:999'],
             'directors' => ['nullable', 'array'],
             'directors.*' => ['string', 'max:255'],
             'writers' => ['nullable', 'array'],
@@ -509,7 +510,7 @@ class AdminMovieController extends Controller
         if ($playbackProtocol === 'mp4') {
             if ($progressiveUrlRaw !== null && $progressiveUrlRaw !== '' && $normalizedProgressiveUrl === null) {
                 throw ValidationException::withMessages([
-                    'progressive_url' => ['آدرس ویدیو باید به فایل progressive مثل .mp4 اشاره کند.'],
+                    'progressive_url' => ['آدرس ویدیو باید به فایل progressive مثل .mp4 یا .mkv اشاره کند.'],
                 ]);
             }
 
@@ -517,7 +518,7 @@ class AdminMovieController extends Controller
             $canonicalHlsUrl = null;
             $shouldValidateHlsAsync = false;
             $hlsUrlUnchanged = true;
-            $nextProcessingStatus = filled($normalizedProgressiveUrl) ? 'ready' : 'pending';
+            $nextProcessingStatus = 'ready';
         } else {
             $normalizedProgressiveUrl = null;
             $canonicalHlsUrl = filled($manualHlsUrlRaw)
@@ -532,7 +533,8 @@ class AdminMovieController extends Controller
             $nextProcessingStatus = match (true) {
                 $hlsUrlUnchanged => 'ready',
                 filled($canonicalHlsUrl) => 'queued',
-                default => 'pending',
+                // Draft without HLS is not an active media job.
+                default => 'ready',
             };
         }
 
@@ -620,10 +622,18 @@ class AdminMovieController extends Controller
                 ->all();
         }
 
+        $contentSource = in_array(($validated['content_source'] ?? null), ['tmdb', 'manual'], true)
+            ? (string) $validated['content_source']
+            : (string) (data_get($existingMetadata, 'content_source') ?: (isset($validated['tmdb_id']) ? 'tmdb' : 'manual'));
+
+        // TMDB sync often lands English-only text when TMDB has no FA overview.
+        // Re-attempt translation on save for TMDB; keep manual admin text as typed.
+        $shouldAutoTranslateSynopsis = $contentSource === 'tmdb';
+
         $synopsisFields = $this->synopsisHelper->localizeContentSynopsis(
             $validated['synopsis'] ?? null,
-            data_get($existingMetadata, 'tmdb.synopsis_en'),
-            autoTranslate: false,
+            $validated['synopsis_en'] ?? data_get($existingMetadata, 'tmdb.synopsis_en'),
+            autoTranslate: $shouldAutoTranslateSynopsis,
         );
         $manualDashUrl = filled($validated['dash_url'] ?? null)
             ? trim((string) $validated['dash_url'])
@@ -638,6 +648,7 @@ class AdminMovieController extends Controller
         );
 
         $metadata = array_replace_recursive($existingMetadata, [
+            'content_source' => $contentSource,
             'seo' => [
                 'meta_title' => filled($validated['meta_title'] ?? null)
                     ? trim((string) $validated['meta_title'])
@@ -755,7 +766,7 @@ class AdminMovieController extends Controller
                 ? trim((string) $validated['trailer_path'])
                 : $movie->trailer_path,
             'synopsis' => $synopsisFields['synopsis'],
-            'age_rating' => $validated['age_rating'] ?? null,
+            'age_rating' => \App\Support\AgeRating::normalize($validated['age_rating'] ?? null),
             'release_year' => $validated['release_year'] ?? null,
             'cast_members' => $castMembers,
             'has_dubbed_audio' => $resolvedHasDubbedAudio,
@@ -827,9 +838,9 @@ class AdminMovieController extends Controller
                 : (is_string(data_get($metadata, 'tmdb.original_language'))
                     ? strtolower((string) data_get($metadata, 'tmdb.original_language'))
                     : null),
-            'content_rating' => filled($validated['age_rating'] ?? null)
-                ? trim((string) $validated['age_rating'])
-                : null,
+            'content_rating' => \App\Support\AgeRating::normalize(
+                filled($validated['age_rating'] ?? null) ? trim((string) $validated['age_rating']) : null,
+            ),
         ]);
 
         if ($movie->mediaAsset) {
@@ -907,7 +918,7 @@ class AdminMovieController extends Controller
             'message' => 'فرم ثبت شد. پردازش تصاویر، HLS و اعتبار بازیگران در صف انجام می‌شود.',
             'pipeline_status' => $resolvedPipelineStatus,
             'data' => [
-                'movie' => $this->transformMovie($movie, true),
+                'movie' => $this->transformMovie($movie, false),
             ],
         ]);
     }
@@ -1337,7 +1348,7 @@ class AdminMovieController extends Controller
             'title' => $movie->title,
             'slug' => $movie->slug,
             'original_title' => $movie->original_title,
-            'synopsis' => $movie->synopsis,
+            'synopsis' => $movie->synopsis ?: data_get($metadata, 'tmdb.synopsis_en'),
             'release_year' => $movie->release_year,
             'duration_seconds' => $movie->duration_seconds,
             'provider_name' => $movie->provider_name,
@@ -1420,6 +1431,7 @@ class AdminMovieController extends Controller
             'published_at' => $movie->published_at?->toISOString(),
             'media_folder' => $movie->media_folder,
             'metadata' => [
+                'content_source' => data_get($metadata, 'content_source'),
                 'tmdb' => [
                     'query' => data_get($metadata, 'tmdb.query'),
                     'tmdb_id' => data_get($metadata, 'tmdb.tmdb_id'),
@@ -1433,6 +1445,8 @@ class AdminMovieController extends Controller
                     'logo_url' => data_get($metadata, 'tmdb.logo_url'),
                     'logo_source_url' => data_get($metadata, 'tmdb.logo_source_url'),
                     'trailer_url' => data_get($metadata, 'tmdb.trailer_url'),
+                    'homepage_url' => data_get($metadata, 'tmdb.homepage_url'),
+                    'synopsis_en' => data_get($metadata, 'tmdb.synopsis_en'),
                     'rating' => data_get($metadata, 'tmdb.rating'),
                     'popularity' => data_get($metadata, 'tmdb.popularity'),
                     'vote_count' => data_get($metadata, 'tmdb.vote_count'),
@@ -1540,22 +1554,8 @@ class AdminMovieController extends Controller
             }
         }
 
-        $primarySlug = null;
-        $previousSlug = null;
-        foreach ($paths as $path) {
-            if (preg_match('#/movies/([^/]+)#', $path, $matches) === 1) {
-                if ($primarySlug === null) {
-                    $primarySlug = $matches[1];
-                } else {
-                    $previousSlug = $matches[1];
-                }
-            }
-        }
-
-        if ($primarySlug !== null) {
-            app(NextPublicCacheRevalidationService::class)->revalidateMovie($primarySlug, $previousSlug);
-        }
-
+        // Next revalidation stays in the queue (RevalidateNextCatalogJob) so admin
+        // save returns in ~1–2s instead of waiting on HTTP to the Next app.
         $this->catalogCacheService->scheduleRebuildAfterContentChange($paths);
     }
 
@@ -1568,7 +1568,7 @@ class AdminMovieController extends Controller
             'id' => $movie->id,
             'title' => $movie->title,
             'slug' => $movie->slug,
-            'synopsis' => $movie->synopsis,
+            'synopsis' => $movie->synopsis ?: data_get($metadata, 'tmdb.synopsis_en'),
             'release_year' => $movie->release_year,
             'poster_url' => $this->resolveManagedOrExternalUrl($movie->poster_path, data_get($metadata, 'tmdb.poster_url')),
             'has_dubbed_audio' => $movie->has_dubbed_audio,
@@ -1738,15 +1738,25 @@ class AdminMovieController extends Controller
             'actors.*.profile_url' => ['nullable', 'string', 'max:2048'],
         ])->validate();
 
-        $data = $this->contentImageIngestionService->ingestTmdbSyncBatch([
-            'entity_type' => 'movie',
-            'entity_id' => $validated['entity_id'] ?? null,
-            'poster_url' => $validated['poster_url'] ?? null,
-            'backdrop_url' => $validated['backdrop_url'] ?? null,
-            'banner_url' => $validated['banner_url'] ?? null,
-            'logo_url' => $validated['logo_url'] ?? null,
-            'actors' => $validated['actors'] ?? [],
-        ]);
+        try {
+            $data = $this->contentImageIngestionService->ingestTmdbSyncBatch([
+                'entity_type' => 'movie',
+                'entity_id' => $validated['entity_id'] ?? null,
+                'poster_url' => $validated['poster_url'] ?? null,
+                'backdrop_url' => $validated['backdrop_url'] ?? null,
+                'banner_url' => $validated['banner_url'] ?? null,
+                'logo_url' => $validated['logo_url'] ?? null,
+                'actors' => $validated['actors'] ?? [],
+            ]);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'پردازش تصاویر TMDB موقتاً ناموفق بود. لطفاً دوباره تلاش کنید.',
+                'data' => null,
+            ], 422);
+        }
 
         return response()->json([
             'success' => true,

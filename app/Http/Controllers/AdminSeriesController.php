@@ -18,7 +18,6 @@ use App\Services\Cinema\CountryCatalogService;
 use App\Services\Cinema\GenreAlignmentService;
 use App\Services\Cinema\GenreCatalogService;
 use App\Services\Cinema\HlsPackageInsightService;
-use App\Services\Cinema\NextPublicCacheRevalidationService;
 use App\Services\Cinema\PublicContentCacheService;
 use App\Support\CatalogListResponseMapper;
 use App\Support\CinemaValidation;
@@ -38,6 +37,7 @@ use App\Services\Cinema\SeriesHlsPathService;
 use App\Services\Cinema\WatchProgressLifecycleService;
 use App\Support\CinemaSynopsisHelper;
 use App\Services\TmdbService;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -48,6 +48,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class AdminSeriesController extends Controller
 {
@@ -176,7 +177,9 @@ class AdminSeriesController extends Controller
             ->when($status !== '', function ($query) use ($status) {
                 $query->where('status', $status);
             })
-            ->latest();
+            ->orderByDesc('updated_at')
+            ->orderByDesc('published_at')
+            ->orderByDesc('id');
 
         $series = $query->paginate($perPage);
 
@@ -269,6 +272,40 @@ class AdminSeriesController extends Controller
         ]);
     }
 
+    public function checkTmdbId(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'tmdb_id' => ['required', 'integer', 'min:1'],
+            'exclude_id' => ['nullable', 'integer', 'min:1'],
+        ])->validate();
+
+        $tmdbId = (int) $validated['tmdb_id'];
+        $excludeId = isset($validated['exclude_id']) ? (int) $validated['exclude_id'] : null;
+
+        $query = Series::query()->where('tmdb_id', $tmdbId);
+
+        if ($excludeId) {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        $existing = $query->first(['id', 'title', 'slug', 'original_title', 'publish_status', 'tmdb_id']);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'available' => $existing === null,
+                'existing' => $existing ? [
+                    'id' => $existing->id,
+                    'title' => $existing->title,
+                    'slug' => $existing->slug,
+                    'original_title' => $existing->original_title,
+                    'publish_status' => $existing->publish_status,
+                    'tmdb_id' => $existing->tmdb_id,
+                ] : null,
+            ],
+        ]);
+    }
+
     private function suggestUniqueSeriesSlug(string $baseSlug, ?int $excludeId = null): string
     {
         $candidate = $baseSlug;
@@ -310,48 +347,52 @@ class AdminSeriesController extends Controller
         $alignedGenres = $this->alignGenresFromValidated($validated);
         $validated = $this->applyLocalizedContentSynopsis($validated);
 
-        $series = DB::transaction(function () use ($validated, $request, $alignedGenres) {
-            $slug = $this->resolveUniqueSlug([
-                $validated['slug'] ?? null,
-                $validated['original_title'] ?? null,
-                $validated['title'] ?? null,
-                isset($validated['tmdb_id']) ? 'series-' . $validated['tmdb_id'] : null,
-            ]);
-            $publishStatus = (string) ($validated['publish_status'] ?? 'draft');
-            $publishState = $this->publishScheduleService->resolvePublishState(
-                $publishStatus,
-                $validated['scheduled_for'] ?? null,
-            );
-            $seasonPayloads = collect($validated['seasons'] ?? []);
-            $episodeTotal = $seasonPayloads
-                ->sum(fn (array $season) => count($season['episodes'] ?? []));
-            $audioFlags = $this->extractAudioFlags($validated['seasons'] ?? []);
+        try {
+            $series = DB::transaction(function () use ($validated, $request, $alignedGenres) {
+                $slug = $this->resolveUniqueSlug([
+                    $validated['slug'] ?? null,
+                    $validated['original_title'] ?? null,
+                    $validated['title'] ?? null,
+                    isset($validated['tmdb_id']) ? 'series-' . $validated['tmdb_id'] : null,
+                ]);
+                $publishStatus = (string) ($validated['publish_status'] ?? 'draft');
+                $publishState = $this->publishScheduleService->resolvePublishState(
+                    $publishStatus,
+                    $validated['scheduled_for'] ?? null,
+                );
+                $seasonPayloads = collect($validated['seasons'] ?? []);
+                $episodeTotal = $seasonPayloads
+                    ->sum(fn (array $season) => count($season['episodes'] ?? []));
+                $audioFlags = $this->extractAudioFlags($validated['seasons'] ?? []);
 
-            $series = Series::create([
-                ...$this->baseSeriesAttributes($validated, $slug, $alignedGenres),
-                'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
-                'number_of_seasons' => $validated['number_of_seasons'] ?? ($seasonPayloads->count() ?: null),
-                'number_of_episodes' => $validated['number_of_episodes'] ?? ($episodeTotal ?: null),
-                'has_subtitle' => $audioFlags['has_subtitle'],
-                'has_dubbed' => $audioFlags['has_dubbed'],
-                'publish_status' => $publishState['publish_status'],
-                'scheduled_for' => $publishState['scheduled_for'],
-                'published_at' => $publishState['published_at'],
-                'metadata' => $this->buildSeriesMetadata($validated, $alignedGenres),
-                'created_by' => $request->user()?->id,
-            ]);
+                $series = Series::create([
+                    ...$this->baseSeriesAttributes($validated, $slug, $alignedGenres),
+                    'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
+                    'number_of_seasons' => $validated['number_of_seasons'] ?? ($seasonPayloads->count() ?: null),
+                    'number_of_episodes' => $validated['number_of_episodes'] ?? ($episodeTotal ?: null),
+                    'has_subtitle' => $audioFlags['has_subtitle'],
+                    'has_dubbed' => $audioFlags['has_dubbed'],
+                    'publish_status' => $publishState['publish_status'],
+                    'scheduled_for' => $publishState['scheduled_for'],
+                    'published_at' => $publishState['published_at'],
+                    'metadata' => $this->buildSeriesMetadata($validated, $alignedGenres),
+                    'created_by' => $request->user()?->id,
+                ]);
 
-            $this->syncSeasons(
-                $series,
-                $validated['seasons'] ?? [],
-                $this->nullableString($validated['hls_base_url'] ?? null),
-            );
+                $this->syncSeasons(
+                    $series,
+                    $validated['seasons'] ?? [],
+                    $this->nullableString($validated['hls_base_url'] ?? null),
+                );
 
-            $this->syncSeriesCatalogFields($series, $validated, $alignedGenres);
-            $this->applySeriesImageIngestion($series, $validated);
+                $this->syncSeriesCatalogFields($series, $validated, $alignedGenres);
+                $this->applySeriesImageIngestion($series, $validated);
 
-            return $series;
-        });
+                return $series;
+            });
+        } catch (UniqueConstraintViolationException $exception) {
+            throw $this->mapSeriesUniqueConstraintException($exception);
+        }
 
         $this->invalidateCatalogCache();
 
@@ -367,12 +408,11 @@ class AdminSeriesController extends Controller
         $this->publishScheduleService->syncScheduledPublishRunner($series->fresh());
 
         $openedPipeline = in_array($pipelineStatus, ['pending', 'running'], true);
+        $publishStatus = (string) ($series->fresh()->publish_status ?? 'draft');
 
         return response()->json([
             'success' => true,
-            'message' => $openedPipeline
-                ? 'محتوا در حال پردازش است. پس از تکمیل، منتشر خواهد شد.'
-                : 'Series registered successfully.',
+            'message' => $this->seriesSaveMessage($publishStatus, $openedPipeline, creating: true),
             'pipeline_status' => $pipelineStatus,
             'data' => $this->slimSeriesResponseData($series->fresh()),
         ], 201);
@@ -415,51 +455,55 @@ class AdminSeriesController extends Controller
 
         $this->watchProgressLifecycle->purgeForSeries($series->id);
 
-        $updated = DB::transaction(function () use ($series, $validated, $alignedGenres) {
-            $slug = $this->resolveUniqueSlug([
-                $validated['slug'] ?? null,
-                $validated['original_title'] ?? null,
-                $validated['title'] ?? null,
-                isset($validated['tmdb_id']) ? 'series-' . $validated['tmdb_id'] : null,
-            ], $series->id);
-            $publishStatus = (string) ($validated['publish_status'] ?? $series->publish_status);
-            $scheduledInput = $publishStatus === 'scheduled'
-                ? ($validated['scheduled_for'] ?? $series->scheduled_for)
-                : null;
-            $publishState = $this->publishScheduleService->resolvePublishState(
-                $publishStatus,
-                $scheduledInput,
-                $series->published_at,
-            );
-            $seasonPayloads = collect($validated['seasons'] ?? []);
-            $episodeTotal = $seasonPayloads
-                ->sum(fn (array $season) => count($season['episodes'] ?? []));
-            $audioFlags = $this->extractAudioFlags($validated['seasons'] ?? []);
+        try {
+            $updated = DB::transaction(function () use ($series, $validated, $alignedGenres) {
+                $slug = $this->resolveUniqueSlug([
+                    $validated['slug'] ?? null,
+                    $validated['original_title'] ?? null,
+                    $validated['title'] ?? null,
+                    isset($validated['tmdb_id']) ? 'series-' . $validated['tmdb_id'] : null,
+                ], $series->id);
+                $publishStatus = (string) ($validated['publish_status'] ?? $series->publish_status);
+                $scheduledInput = $publishStatus === 'scheduled'
+                    ? ($validated['scheduled_for'] ?? $series->scheduled_for)
+                    : null;
+                $publishState = $this->publishScheduleService->resolvePublishState(
+                    $publishStatus,
+                    $scheduledInput,
+                    $series->published_at,
+                );
+                $seasonPayloads = collect($validated['seasons'] ?? []);
+                $episodeTotal = $seasonPayloads
+                    ->sum(fn (array $season) => count($season['episodes'] ?? []));
+                $audioFlags = $this->extractAudioFlags($validated['seasons'] ?? []);
 
-            $series->update([
-                ...$this->baseSeriesAttributes($validated, $slug, $alignedGenres),
-                'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
-                'number_of_seasons' => $validated['number_of_seasons'] ?? ($seasonPayloads->count() ?: null),
-                'number_of_episodes' => $validated['number_of_episodes'] ?? ($episodeTotal ?: null),
-                'has_subtitle' => $audioFlags['has_subtitle'],
-                'has_dubbed' => $audioFlags['has_dubbed'],
-                'publish_status' => $publishState['publish_status'],
-                'scheduled_for' => $publishState['scheduled_for'],
-                'published_at' => $publishState['published_at'],
-                'metadata' => $this->buildSeriesMetadata($validated, $alignedGenres),
-            ]);
+                $series->update([
+                    ...$this->baseSeriesAttributes($validated, $slug, $alignedGenres),
+                    'tmdb_id' => isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
+                    'number_of_seasons' => $validated['number_of_seasons'] ?? ($seasonPayloads->count() ?: null),
+                    'number_of_episodes' => $validated['number_of_episodes'] ?? ($episodeTotal ?: null),
+                    'has_subtitle' => $audioFlags['has_subtitle'],
+                    'has_dubbed' => $audioFlags['has_dubbed'],
+                    'publish_status' => $publishState['publish_status'],
+                    'scheduled_for' => $publishState['scheduled_for'],
+                    'published_at' => $publishState['published_at'],
+                    'metadata' => $this->buildSeriesMetadata($validated, $alignedGenres),
+                ]);
 
-            $this->syncSeasons(
-                $series,
-                $validated['seasons'] ?? [],
-                $this->nullableString($validated['hls_base_url'] ?? null),
-            );
+                $this->syncSeasons(
+                    $series,
+                    $validated['seasons'] ?? [],
+                    $this->nullableString($validated['hls_base_url'] ?? null),
+                );
 
-            $this->syncSeriesCatalogFields($series, $validated, $alignedGenres);
-            $this->applySeriesImageIngestion($series, $validated);
+                $this->syncSeriesCatalogFields($series, $validated, $alignedGenres);
+                $this->applySeriesImageIngestion($series, $validated);
 
-            return $series;
-        });
+                return $series;
+            });
+        } catch (UniqueConstraintViolationException $exception) {
+            throw $this->mapSeriesUniqueConstraintException($exception);
+        }
 
         $this->invalidateCatalogCache(
             filled($updated->slug) ? '/series/'.$updated->slug : null,
@@ -479,6 +523,7 @@ class AdminSeriesController extends Controller
         $this->publishScheduleService->syncScheduledPublishRunner($updated->fresh());
 
         $openedPipeline = in_array($pipelineStatus, ['pending', 'running'], true);
+        $publishStatus = (string) ($updated->fresh()->publish_status ?? 'draft');
 
         app(ContentChangeLogger::class)->log(
             'series',
@@ -490,9 +535,7 @@ class AdminSeriesController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => $openedPipeline
-                ? 'محتوا در حال پردازش است. پس از تکمیل، منتشر خواهد شد.'
-                : 'Series saved successfully.',
+            'message' => $this->seriesSaveMessage($publishStatus, $openedPipeline, creating: false),
             'pipeline_status' => $pipelineStatus,
             'data' => $this->slimSeriesResponseData($updated->fresh()),
         ]);
@@ -581,12 +624,7 @@ class AdminSeriesController extends Controller
             ], 422);
         }
 
-        if (in_array($series->pipeline_status, ['pending', 'running'], true)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Content processing pipeline is still running. Please wait until it completes.',
-            ], 422);
-        }
+        // Publishing a series must not wait on image/credits pipeline or episode play links.
 
         $publishState = $this->publishScheduleService->resolvePublishState(
             $publishStatus,
@@ -737,9 +775,11 @@ class AdminSeriesController extends Controller
     private function validateSeriesPayload(Request $request, ?Series $series = null): array
     {
         $slugRule = Rule::unique('series', 'slug');
+        $tmdbRule = Rule::unique('series', 'tmdb_id');
 
         if ($series) {
             $slugRule->ignore($series->id);
+            $tmdbRule->ignore($series->id);
         }
 
         return Validator::make($request->all(), [
@@ -753,7 +793,7 @@ class AdminSeriesController extends Controller
             'release_year' => ['nullable', 'integer', 'between:1888,2100'],
             'status' => ['nullable', 'string', 'max:120'],
             'show_type' => ['nullable', 'string', 'max:120'],
-            'episode_runtime_minutes' => ['nullable', 'integer', 'min:1', 'max:999'],
+            'episode_runtime_minutes' => ['nullable', 'integer', 'min:0', 'max:999'],
             'number_of_seasons' => ['nullable', 'integer', 'min:0', 'max:999'],
             'number_of_episodes' => ['nullable', 'integer', 'min:0', 'max:9999'],
             'network' => ['nullable', 'string', 'max:255'],
@@ -773,7 +813,8 @@ class AdminSeriesController extends Controller
             'publish_status' => ['nullable', Rule::in(['draft', 'scheduled', 'published'])],
             'scheduled_for' => ['nullable', 'string', 'max:32'],
             'tmdb_query' => ['nullable', 'string', 'max:255'],
-            'tmdb_id' => ['nullable', 'integer', 'min:1'],
+            'tmdb_id' => ['nullable', 'integer', 'min:1', $tmdbRule],
+            'content_source' => ['nullable', Rule::in(['tmdb', 'manual'])],
             'imdb_id' => ['nullable', 'string', 'max:32'],
             'tvdb_id' => ['nullable', 'string', 'max:32'],
             'meta_title' => ['nullable', 'string', 'max:160'],
@@ -837,7 +878,7 @@ class AdminSeriesController extends Controller
             'seasons.*.episodes.*.synopsis' => ['nullable', 'string'],
             'seasons.*.episodes.*.synopsis_en' => ['nullable', 'string'],
             'seasons.*.episodes.*.air_date' => ['nullable', 'date'],
-            'seasons.*.episodes.*.duration_minutes' => ['nullable', 'integer', 'min:1', 'max:999'],
+            'seasons.*.episodes.*.duration_minutes' => ['nullable', 'integer', 'min:0', 'max:999'],
             'seasons.*.episodes.*.still_url' => CinemaValidation::nullableImageOrUrl(),
             'seasons.*.episodes.*.source_method' => ['nullable', Rule::in(['upload', 'embed', 'url', 'hls'])],
             'seasons.*.episodes.*.video_url' => ['nullable', 'url', 'max:2048'],
@@ -861,6 +902,45 @@ class AdminSeriesController extends Controller
             'drm_scheme' => ['sometimes', Rule::in(['none', 'widevine', 'playready', 'fairplay'])],
             'drm_license_url' => ['sometimes', 'nullable', 'url', 'max:1024'],
         ])->validate();
+    }
+
+    private function seriesSaveMessage(string $publishStatus, bool $openedPipeline, bool $creating): string
+    {
+        if ($publishStatus === 'published') {
+            return $openedPipeline
+                ? 'سریال منتشر شد. پردازش تصاویر در پس‌زمینه ادامه دارد.'
+                : ($creating ? 'سریال با موفقیت ثبت و منتشر شد.' : 'سریال با موفقیت ذخیره و منتشر شد.');
+        }
+
+        if ($openedPipeline) {
+            return $creating
+                ? 'سریال ثبت شد. پردازش تصاویر در پس‌زمینه ادامه دارد.'
+                : 'سریال ذخیره شد. پردازش تصاویر در پس‌زمینه ادامه دارد.';
+        }
+
+        return $creating ? 'Series registered successfully.' : 'Series saved successfully.';
+    }
+
+    private function mapSeriesUniqueConstraintException(
+        UniqueConstraintViolationException $exception,
+    ): ValidationException {
+        $message = $exception->getMessage();
+
+        if (str_contains($message, 'series_tmdb_id_unique') || str_contains($message, 'tmdb_id')) {
+            return ValidationException::withMessages([
+                'tmdb_id' => ['این شناسه TMDB قبلاً برای سریال دیگری ثبت شده است.'],
+            ]);
+        }
+
+        if (str_contains($message, 'series_slug_unique') || str_contains($message, 'slug')) {
+            return ValidationException::withMessages([
+                'slug' => ['این اسلاگ قبلاً استفاده شده است.'],
+            ]);
+        }
+
+        return ValidationException::withMessages([
+            'title' => ['ثبت سریال به‌خاطر تکراری بودن یکی از فیلدهای یکتا ممکن نشد.'],
+        ]);
     }
 
     /**
@@ -963,7 +1043,7 @@ class AdminSeriesController extends Controller
             'original_language' => filled($validated['original_language'] ?? null)
                 ? strtolower(trim((string) $validated['original_language']))
                 : null,
-            'content_rating' => $this->nullableString($validated['age_rating'] ?? null),
+            'content_rating' => \App\Support\AgeRating::normalize($this->nullableString($validated['age_rating'] ?? null)),
         ]);
     }
 
@@ -988,22 +1068,8 @@ class AdminSeriesController extends Controller
             }
         }
 
-        $primarySlug = null;
-        $previousSlug = null;
-        foreach ($paths as $path) {
-            if (preg_match('#/series/([^/]+)#', $path, $matches) === 1) {
-                if ($primarySlug === null) {
-                    $primarySlug = $matches[1];
-                } else {
-                    $previousSlug = $matches[1];
-                }
-            }
-        }
-
-        if ($primarySlug !== null) {
-            app(NextPublicCacheRevalidationService::class)->revalidateSeries($primarySlug, $previousSlug);
-        }
-
+        // Next revalidation stays in the queue (RevalidateNextCatalogJob) so admin
+        // save returns in ~1–2s instead of waiting on HTTP to the Next app.
         $this->catalogCacheService->scheduleRebuildAfterContentChange($paths);
     }
 
@@ -1067,7 +1133,7 @@ class AdminSeriesController extends Controller
             'poster_url' => $this->nullableString($validated['poster_url'] ?? null),
             'backdrop_url' => $this->nullableString($validated['backdrop_url'] ?? null),
             'trailer_url' => $this->nullableString($validated['trailer_url'] ?? null),
-            'age_rating' => $this->nullableString($validated['age_rating'] ?? null),
+            'age_rating' => \App\Support\AgeRating::normalize($this->nullableString($validated['age_rating'] ?? null)),
             'catalog_visibility' => $validated['catalog_visibility'] ?? 'catalog_search',
             'is_featured' => (bool) ($validated['is_featured'] ?? false),
             'exclude_from_slider' => array_key_exists('exclude_from_slider', $validated)
@@ -1116,6 +1182,9 @@ class AdminSeriesController extends Controller
         $filterNetworkIds = $primaryNetwork ? $this->normalizeFilterIdentifiers([$primaryNetwork]) : [];
 
         return [
+            'content_source' => in_array(($validated['content_source'] ?? null), ['tmdb', 'manual'], true)
+                ? $validated['content_source']
+                : (isset($validated['tmdb_id']) ? 'tmdb' : 'manual'),
             'tmdb' => [
                 'query' => $this->nullableString($validated['tmdb_query'] ?? null),
                 'tmdb_id' => $validated['tmdb_id'] ?? null,
@@ -1466,11 +1535,15 @@ class AdminSeriesController extends Controller
         $metadata = is_array($series->metadata) ? $series->metadata : [];
         $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
 
+        $synopsisFallback = $series->synopsis
+            ?: data_get($metadata, 'tmdb.synopsis_en')
+            ?: data_get($metadata, 'tmdb.synopsis_fa');
+
         return [
             'id' => $series->id,
             'title' => $series->title,
             'slug' => $series->slug,
-            'synopsis' => $series->synopsis,
+            'synopsis' => $synopsisFallback,
             'first_air_date' => $series->first_air_date?->toDateString(),
             'status' => $series->status,
             'network' => $series->network,
@@ -1627,6 +1700,8 @@ class AdminSeriesController extends Controller
         $hasDubbed = (bool) ($series->has_dubbed ?? false);
         $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
         $backdropImage = $this->imagePresentationService->seriesBackdropImage($metadata);
+        $synopsisEn = data_get($metadata, 'tmdb.synopsis_en');
+        $synopsisDisplay = $series->synopsis ?: $synopsisEn;
 
         $data = [
             'id' => $series->id,
@@ -1634,7 +1709,7 @@ class AdminSeriesController extends Controller
             'title' => $series->title,
             'slug' => $series->slug,
             'original_title' => $series->original_title,
-            'synopsis' => $series->synopsis,
+            'synopsis' => $synopsisDisplay,
             'first_air_date' => $series->first_air_date?->toDateString(),
             'last_air_date' => $series->last_air_date?->toDateString(),
             'release_year' => $series->release_year,
@@ -1670,21 +1745,29 @@ class AdminSeriesController extends Controller
             'scheduled_for' => $this->publishScheduleService->formatScheduleForApi($series->scheduled_for),
             'published_at' => $series->published_at?->toISOString(),
             'metadata' => [
+                'content_source' => data_get($metadata, 'content_source'),
                 'tmdb' => [
                     'query' => data_get($metadata, 'tmdb.query'),
                     'tmdb_id' => data_get($metadata, 'tmdb.tmdb_id'),
                     'imdb_id' => data_get($metadata, 'tmdb.imdb_id'),
                     'tvdb_id' => data_get($metadata, 'tmdb.tvdb_id'),
                     'rating' => data_get($metadata, 'tmdb.rating'),
+                    'popularity' => data_get($metadata, 'tmdb.popularity'),
+                    'vote_count' => data_get($metadata, 'tmdb.vote_count'),
                     'original_language' => data_get($metadata, 'tmdb.original_language'),
                     'episode_runtime_minutes' => data_get($metadata, 'tmdb.episode_runtime_minutes'),
+                    'synopsis_en' => $synopsisEn,
+                    'poster_url' => data_get($metadata, 'tmdb.poster_url'),
+                    'poster_source_url' => data_get($metadata, 'tmdb.poster_source_url'),
+                    'backdrop_url' => data_get($metadata, 'tmdb.backdrop_url'),
+                    'backdrop_source_url' => data_get($metadata, 'tmdb.backdrop_source_url'),
                     'creators' => data_get($metadata, 'tmdb.creators', []),
                     'directors' => data_get($metadata, 'tmdb.directors', []),
                     'writers' => data_get($metadata, 'tmdb.writers', []),
-                    'genres' => $this->genreAlignmentService->align(
+                    // Avoid GenreAlignmentService DB lookups on every admin show.
+                    'genres' => $this->extractStoredGenreLabels(
                         data_get($metadata, 'tmdb.genre_refs', data_get($metadata, 'tmdb.genres', [])),
-                        'tv',
-                    )['labels'],
+                    ),
                     'tags' => data_get($metadata, 'tmdb.tags', []),
                     'languages' => data_get($metadata, 'tmdb.languages', []),
                     'countries' => data_get($metadata, 'tmdb.countries', []),
@@ -1760,12 +1843,10 @@ class AdminSeriesController extends Controller
                         'person_id' => $row->person_id,
                         'name' => $row->person?->name,
                         'character' => $row->character_name,
-                        'profile_url' => $row->person
-                            ? $this->imagePresentationService->resolvePersonProfileUrl($row->person)
-                            : null,
-                        'profile_image' => $row->person
-                            ? $this->imagePresentationService->personProfileImage($row->person)
-                            : null,
+                        // Admin edit only needs the stored URL — skip image_assets lookups.
+                        'profile_url' => $row->person?->getProfileImageUrl()
+                            ?: data_get($row->person?->metadata, 'images.profile.original'),
+                        'profile_image' => data_get($row->person?->metadata, 'images.profile'),
                         'credit_id' => $row->tmdb_credit_id,
                         'order' => $row->cast_order,
                         'known_for_department' => $row->person?->known_for_department ?? 'Acting',
@@ -1781,12 +1862,9 @@ class AdminSeriesController extends Controller
                         'name' => $row->person?->name,
                         'job' => $row->job,
                         'department' => $row->department,
-                        'profile_url' => $row->person
-                            ? $this->imagePresentationService->resolvePersonProfileUrl($row->person)
-                            : null,
-                        'profile_image' => $row->person
-                            ? $this->imagePresentationService->personProfileImage($row->person)
-                            : null,
+                        'profile_url' => $row->person?->getProfileImageUrl()
+                            ?: data_get($row->person?->metadata, 'images.profile.original'),
+                        'profile_image' => data_get($row->person?->metadata, 'images.profile'),
                         'credit_id' => $row->tmdb_credit_id,
                         'slug' => $row->person?->slug,
                     ])
@@ -1853,10 +1931,7 @@ class AdminSeriesController extends Controller
         );
         $synopsis = $synopsisFields['synopsis'];
         $synopsisEn = $synopsisFields['synopsis_en'];
-        $posterFields = $this->imagePresentationService->enrichListImageFields(
-            $season->poster_url,
-            data_get($metadata, 'images.poster'),
-        );
+        $storedPoster = data_get($metadata, 'images.poster');
 
         return [
             'id' => $season->id,
@@ -1866,10 +1941,11 @@ class AdminSeriesController extends Controller
             'synopsis_en' => $synopsisEn,
             'air_date' => $season->air_date?->toDateString(),
             'episode_count' => $season->episode_count,
-            'poster_url' => $posterFields['url'],
-            'poster_blur_url' => $posterFields['blur_url'],
-            'poster_srcset' => $posterFields['srcset'],
-            'poster_image' => $posterFields['image'],
+            // Admin payload: use stored URLs only (no per-image image_assets lookup).
+            'poster_url' => $season->poster_url ?: data_get($storedPoster, 'original'),
+            'poster_blur_url' => data_get($storedPoster, 'blur'),
+            'poster_srcset' => data_get($storedPoster, 'srcset_string'),
+            'poster_image' => is_array($storedPoster) ? $storedPoster : null,
             'hls_base_url' => data_get($metadata, 'playback.hls_base_url'),
             'episodes' => $season->episodes
                 ->map(fn (SeriesEpisode $episode) => $this->transformEpisode($episode))
@@ -1889,10 +1965,7 @@ class AdminSeriesController extends Controller
         );
         $synopsis = $synopsisFields['synopsis'];
         $synopsisEn = $synopsisFields['synopsis_en'];
-        $stillFields = $this->imagePresentationService->enrichListImageFields(
-            $episode->still_url,
-            data_get($metadata, 'images.still'),
-        );
+        $storedStill = data_get($metadata, 'images.still');
 
         return [
             'id' => $episode->id,
@@ -1904,10 +1977,10 @@ class AdminSeriesController extends Controller
             'synopsis_en' => $synopsisEn,
             'air_date' => $episode->air_date?->toDateString(),
             'duration_minutes' => $episode->duration_minutes,
-            'still_url' => $stillFields['url'],
-            'still_blur_url' => $stillFields['blur_url'],
-            'still_srcset' => $stillFields['srcset'],
-            'still_image' => $stillFields['image'],
+            'still_url' => $episode->still_url ?: data_get($storedStill, 'original'),
+            'still_blur_url' => data_get($storedStill, 'blur'),
+            'still_srcset' => data_get($storedStill, 'srcset_string'),
+            'still_image' => is_array($storedStill) ? $storedStill : null,
             'source_method' => $episode->source_method,
             'video_url' => $episode->video_url,
             'embed_url' => $episode->embed_url,
@@ -1924,6 +1997,36 @@ class AdminSeriesController extends Controller
                 || filled($episode->dubbed_audio_url),
             'publish_status' => $episode->publish_status,
         ];
+    }
+
+    /**
+     * @param  mixed  $genres
+     * @return array<int, string>
+     */
+    private function extractStoredGenreLabels(mixed $genres): array
+    {
+        return collect(is_array($genres) ? $genres : [])
+            ->map(function ($genre) {
+                if (is_string($genre) && trim($genre) !== '') {
+                    return trim($genre);
+                }
+
+                if (! is_array($genre)) {
+                    return null;
+                }
+
+                foreach (['name', 'label', 'slug'] as $key) {
+                    if (filled($genre[$key] ?? null)) {
+                        return trim((string) $genre[$key]);
+                    }
+                }
+
+                return null;
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
     }
 
     private function resolveUniqueSlug(array $candidates, ?int $ignoreSeriesId = null): string
@@ -2137,7 +2240,7 @@ class AdminSeriesController extends Controller
             'synopsis' => ['nullable', 'string'],
             'synopsis_en' => ['nullable', 'string'],
             'air_date' => ['nullable', 'date'],
-            'duration_minutes' => ['nullable', 'integer', 'min:1', 'max:999'],
+            'duration_minutes' => ['nullable', 'integer', 'min:0', 'max:999'],
             'still_url' => CinemaValidation::nullableImageOrUrl(),
             'source_method' => ['nullable', Rule::in(['upload', 'embed', 'url', 'hls'])],
             'video_url' => ['nullable', 'url', 'max:2048'],
@@ -2245,11 +2348,16 @@ class AdminSeriesController extends Controller
     private function applyLocalizedContentSynopsis(array $validated, ?Series $existing = null): array
     {
         $metadata = $existing && is_array($existing->metadata) ? $existing->metadata : [];
+        $contentSource = in_array(($validated['content_source'] ?? null), ['tmdb', 'manual'], true)
+            ? (string) $validated['content_source']
+            : (string) (data_get($metadata, 'content_source') ?: (isset($validated['tmdb_id']) ? 'tmdb' : 'manual'));
+
         $synopsisFields = $this->synopsisHelper->localizeContentSynopsis(
             $this->nullableString($validated['synopsis'] ?? null),
             $this->nullableString(
                 $validated['synopsis_en'] ?? data_get($metadata, 'tmdb.synopsis_en'),
             ),
+            autoTranslate: $contentSource === 'tmdb',
         );
 
         $validated['synopsis'] = $synopsisFields['synopsis'];
@@ -2276,16 +2384,26 @@ class AdminSeriesController extends Controller
             'seasons.*.episodes.*.still_url' => ['nullable', 'string', 'max:2048'],
         ])->validate();
 
-        $data = $this->contentImageIngestionService->ingestTmdbSyncBatch([
-            'entity_type' => 'series',
-            'entity_id' => $validated['entity_id'] ?? null,
-            'poster_url' => $validated['poster_url'] ?? null,
-            'backdrop_url' => $validated['backdrop_url'] ?? null,
-            'banner_url' => $validated['banner_url'] ?? null,
-            'logo_url' => $validated['logo_url'] ?? null,
-            'actors' => $validated['actors'] ?? [],
-            'seasons' => $validated['seasons'] ?? [],
-        ]);
+        try {
+            $data = $this->contentImageIngestionService->ingestTmdbSyncBatch([
+                'entity_type' => 'series',
+                'entity_id' => $validated['entity_id'] ?? null,
+                'poster_url' => $validated['poster_url'] ?? null,
+                'backdrop_url' => $validated['backdrop_url'] ?? null,
+                'banner_url' => $validated['banner_url'] ?? null,
+                'logo_url' => $validated['logo_url'] ?? null,
+                'actors' => $validated['actors'] ?? [],
+                'seasons' => $validated['seasons'] ?? [],
+            ]);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'پردازش تصاویر TMDB موقتاً ناموفق بود. لطفاً دوباره تلاش کنید.',
+                'data' => null,
+            ], 422);
+        }
 
         return response()->json([
             'success' => true,

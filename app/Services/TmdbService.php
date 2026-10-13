@@ -899,25 +899,50 @@ class TmdbService
 
     protected function request(string $path, array $query = []): array
     {
-        $accessToken = trim((string) config('services.tmdb.access_token'));
-        $apiKey = trim((string) config('services.tmdb.api_key'));
+        $credentialSets = $this->tmdbCredentialSets();
         $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
-        $request = $this->configureHttpClient(
-            Http::acceptJson()->timeout(20)
-        );
 
-        if ($accessToken !== '') {
-            $request = $request->withToken($accessToken);
-        } elseif ($apiKey !== '') {
-            $query['api_key'] = $apiKey;
-        } else {
+        if ($credentialSets === []) {
             throw new RuntimeException('TMDB credentials are not configured.');
         }
 
-        $response = $request->get($baseUrl . $path, $query);
-        $response->throw();
+        $lastException = null;
 
-        return $response->json() ?? [];
+        foreach ($credentialSets as $index => $creds) {
+            try {
+                $requestQuery = $query;
+                $request = $this->configureHttpClient(
+                    Http::acceptJson()->timeout(20)
+                );
+
+                if ($creds['access_token'] !== '') {
+                    $request = $request->withToken($creds['access_token']);
+                } elseif ($creds['api_key'] !== '') {
+                    $requestQuery['api_key'] = $creds['api_key'];
+                } else {
+                    continue;
+                }
+
+                $response = $request->get($baseUrl.$path, $requestQuery);
+                $response->throw();
+
+                return $response->json() ?? [];
+            } catch (\Throwable $exception) {
+                $lastException = $exception;
+
+                if ($index < count($credentialSets) - 1) {
+                    usleep(200_000 * ($index + 1));
+
+                    continue;
+                }
+            }
+        }
+
+        if ($lastException instanceof \Throwable) {
+            throw $lastException;
+        }
+
+        throw new RuntimeException('TMDB request failed with all configured credentials.');
     }
 
     private function configureHttpClient(\Illuminate\Http\Client\PendingRequest $request): \Illuminate\Http\Client\PendingRequest
@@ -1410,26 +1435,43 @@ class TmdbService
     private function normalizeTvContentRating(string $raw): string
     {
         $map = [
-            'TV-Y'   => 'G',
-            'TV-Y7'  => 'G',
-            'TV-G'   => 'G',
-            'TV-PG'  => 'PG',
-            'TV-14'  => 'PG-13',
-            'TV-MA'  => 'R',
-            'NR'     => 'PG',
-            '12'     => 'PG-13',
-            '12A'    => 'PG-13',
-            '15'     => '16+',
-            '16'     => '16+',
-            '16+'    => '16+',
-            '18'     => '18+',
-            '18+'    => '18+',
-            'NC-17'  => '18+',
-            'X'      => '18+',
-            'R18'    => '18+',
+            'TV-Y'   => '0',
+            'TV-Y7'  => '0',
+            'TV-G'   => '0',
+            'G'      => '0',
+            'TV-PG'  => '7',
+            'PG'     => '7',
+            'NR'     => '7',
+            'TV-14'  => '13',
+            'PG-13'  => '13',
+            '12'     => '13',
+            '12A'    => '13',
+            '15'     => '16',
+            '16'     => '16',
+            '16+'    => '16',
+            'TV-MA'  => '17',
+            'R'      => '17',
+            '18'     => '18',
+            '18+'    => '18',
+            'NC-17'  => '18',
+            'X'      => '18',
+            'R18'    => '18',
         ];
 
-        return $map[strtoupper($raw)] ?? $map[$raw] ?? $raw;
+        $key = strtoupper(trim($raw));
+        if (isset($map[$key])) {
+            return $map[$key];
+        }
+
+        if (isset($map[$raw])) {
+            return $map[$raw];
+        }
+
+        if (preg_match('/^(\d{1,2})\+?$/', trim($raw), $matches) === 1) {
+            return $matches[1];
+        }
+
+        return $raw;
     }
 
     private function shouldFetchEnglishTvFallback(array $payload, string $language): bool
