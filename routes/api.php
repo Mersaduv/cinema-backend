@@ -148,6 +148,7 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin,media,support'])->prefix
     Route::middleware('permission:edit_movies,create_movies,edit_series,create_series')->post('/upload/image', [AdminUploadController::class, 'storeImage']);
 
     Route::middleware('permission:view_movies,create_movies,edit_movies')->get('/movies/check-slug', [AdminMovieController::class, 'checkSlug']);
+    Route::middleware('permission:view_movies,create_movies,edit_movies')->get('/movies/check-tmdb', [AdminMovieController::class, 'checkTmdbId']);
     Route::middleware('permission:view_movies')->get('/movies', [AdminMovieController::class, 'index']);
     Route::middleware('permission:view_movies')->get('/movies/options', [AdminMovieController::class, 'options']);
     Route::middleware('permission:create_movies')->post('/movies', [AdminMovieController::class, 'store']);

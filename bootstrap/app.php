@@ -35,6 +35,32 @@ return Application::configure(basePath: dirname(__DIR__))
             return null;
         });
 
+        $exceptions->render(function (\Illuminate\Database\UniqueConstraintViolationException $exception, $request) {
+            if (! ($request->expectsJson() || $request->is('api/*'))) {
+                return null;
+            }
+
+            $message = $exception->getMessage();
+            $field = 'form';
+            $userMessage = 'ثبت به‌خاطر تکراری بودن یکی از فیلدهای یکتا ممکن نشد.';
+
+            if (str_contains($message, 'tmdb_id')) {
+                $field = 'tmdb_id';
+                $userMessage = 'این شناسه TMDB قبلاً ثبت شده است.';
+            } elseif (str_contains($message, 'slug')) {
+                $field = 'slug';
+                $userMessage = 'این اسلاگ قبلاً استفاده شده است.';
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => $userMessage,
+                'errors' => [
+                    $field => [$userMessage],
+                ],
+            ], 422);
+        });
+
         // When an exception escapes middleware, HandleCors never adds headers and
         // the browser reports a misleading CORS failure instead of the real error.
         $exceptions->respond(function ($response, \Throwable $exception, $request) {

@@ -117,3 +117,10 @@ DELETE /api/movies/{id}      # حذف فیلم
 - Base URL: `http://localhost:8000`
 - API Prefix: `/api`
 - CORS: باید در `config/cors.php` تنظیم شود
+
+
+دستورات زیر هم بزن
+ D:\php82\php.exe artisan view:clear ; D:\php82\php.exe artisan confi
+g:clear ; D:\php82\php.exe artisan route:clear ; D:\php82\php.exe artisan cache:clear
+و 
+D:\php82\php.exe artisan optimize:clear

@@ -42,6 +42,7 @@ use App\Services\Cinema\ContentPreviewTokenService;
 use App\Services\Cinema\PublishIdempotencyService;
 use App\Services\Cinema\PublishScheduleService;
 use App\Services\TmdbService;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -195,6 +196,40 @@ class AdminMovieController extends Controller
         ]);
     }
 
+    public function checkTmdbId(Request $request): JsonResponse
+    {
+        $validated = Validator::make($request->all(), [
+            'tmdb_id' => ['required', 'integer', 'min:1'],
+            'exclude_id' => ['nullable', 'integer', 'min:1'],
+        ])->validate();
+
+        $tmdbId = (int) $validated['tmdb_id'];
+        $excludeId = isset($validated['exclude_id']) ? (int) $validated['exclude_id'] : null;
+
+        $query = Movie::query()->where('tmdb_id', $tmdbId);
+
+        if ($excludeId) {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        $existing = $query->first(['id', 'title', 'slug', 'original_title', 'publish_status', 'tmdb_id']);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'available' => $existing === null,
+                'existing' => $existing ? [
+                    'id' => $existing->id,
+                    'title' => $existing->title,
+                    'slug' => $existing->slug,
+                    'original_title' => $existing->original_title,
+                    'publish_status' => $existing->publish_status,
+                    'tmdb_id' => $existing->tmdb_id,
+                ] : null,
+            ],
+        ]);
+    }
+
     private function suggestUniqueMovieSlug(string $baseSlug, ?int $excludeId = null): string
     {
         $candidate = $baseSlug;
@@ -217,6 +252,28 @@ class AdminMovieController extends Controller
         }
 
         return $query->exists();
+    }
+
+    private function mapMovieUniqueConstraintException(
+        UniqueConstraintViolationException $exception,
+    ): ValidationException {
+        $message = $exception->getMessage();
+
+        if (str_contains($message, 'movies_tmdb_id_unique') || str_contains($message, 'tmdb_id')) {
+            return ValidationException::withMessages([
+                'tmdb_id' => ['این شناسه TMDB قبلاً برای فیلم دیگری ثبت شده است.'],
+            ]);
+        }
+
+        if (str_contains($message, 'movies_slug_unique') || str_contains($message, 'slug')) {
+            return ValidationException::withMessages([
+                'slug' => ['این اسلاگ قبلاً استفاده شده است.'],
+            ]);
+        }
+
+        return ValidationException::withMessages([
+            'title' => ['ثبت فیلم به‌خاطر تکراری بودن یکی از فیلدهای یکتا ممکن نشد.'],
+        ]);
     }
 
     public function store(Request $request): JsonResponse
@@ -400,7 +457,7 @@ class AdminMovieController extends Controller
             'age_rating' => ['nullable', 'string', 'max:50'],
             'release_year' => ['nullable', 'integer', 'between:1888,2100'],
             'content_source' => ['nullable', Rule::in(['tmdb', 'manual'])],
-            'tmdb_id' => ['nullable', 'integer', 'min:1'],
+            'tmdb_id' => ['nullable', 'integer', 'min:1', Rule::unique('movies', 'tmdb_id')->ignore($movie->id)],
             'imdb_id' => ['nullable', 'string', 'max:32'],
             'tmdb_query' => ['nullable', 'string', 'max:255'],
             'rating' => ['nullable', 'numeric', 'between:0,10'],
@@ -477,6 +534,9 @@ class AdminMovieController extends Controller
             'quality_badges' => ['nullable', 'array'],
             'quality_badges.*' => [Rule::in(ContentMetadataOptions::QUALITY_BADGES)],
             'admin_notes' => ['nullable', 'string', 'max:2000'],
+        ], [
+            'tmdb_id.unique' => 'این شناسه TMDB قبلاً برای فیلم دیگری ثبت شده است.',
+            'slug.unique' => 'این اسلاگ قبلاً استفاده شده است.',
         ])->validate();
 
         $subtitleSourcePath = filled($validated['subtitle_source_path'] ?? null)
@@ -814,64 +874,68 @@ class AdminMovieController extends Controller
             $movieUpdate['catalog_visibility'] = $validated['catalog_visibility'] ?? 'catalog_search';
         }
 
-        $movie->update($movieUpdate);
+        try {
+            $movie->update($movieUpdate);
 
-        $this->genreCatalogService->syncMovieGenres($movie, $genres);
-        $this->genreAlignmentService->touchAfterAlignment();
+            $this->genreCatalogService->syncMovieGenres($movie, $genres);
+            $this->genreAlignmentService->touchAfterAlignment();
 
-        $collectionData = data_get($metadata, 'tmdb.belongs_to_collection');
-        if (is_array($collectionData) && $collectionData !== []) {
-            $this->collectionService->linkMovieQuick($collectionData, $movie->id);
-            $this->catalogCacheService->forgetPublicCollectionsList();
-        }
+            $collectionData = data_get($metadata, 'tmdb.belongs_to_collection');
+            if (is_array($collectionData) && $collectionData !== []) {
+                $this->collectionService->linkMovieQuick($collectionData, $movie->id);
+                $this->catalogCacheService->forgetPublicCollectionsList();
+            }
 
-        SyncMovieCollectionJob::dispatch(
-            $movie->id,
-            $metadata,
-            isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
-        );
+            SyncMovieCollectionJob::dispatch(
+                $movie->id,
+                $metadata,
+                isset($validated['tmdb_id']) ? (int) $validated['tmdb_id'] : null,
+            );
 
-        $movie->update([
-            'origin_country' => $primaryCountry,
-            'original_language' => filled($validated['original_language'] ?? null)
-                ? strtolower(trim((string) $validated['original_language']))
-                : (is_string(data_get($metadata, 'tmdb.original_language'))
-                    ? strtolower((string) data_get($metadata, 'tmdb.original_language'))
-                    : null),
-            'content_rating' => \App\Support\AgeRating::normalize(
-                filled($validated['age_rating'] ?? null) ? trim((string) $validated['age_rating']) : null,
-            ),
-        ]);
-
-        if ($movie->mediaAsset) {
-            $movie->mediaAsset->update([
-                'source_path' => $resolvedSourcePath ?: $movie->mediaAsset->source_path,
-                'source_is_external' => $this->isPublicationSourceExternal($resolvedSourcePath ?: $movie->mediaAsset->source_path),
-                'master_playlist_relative_path' => (string) (($canonicalHlsUrl ?? $manualHlsUrlRaw) ?: ''),
-                'processing_status' => $nextProcessingStatus,
-                'processing_progress_percent' => $nextProcessingStatus === 'ready' ? 100 : 0,
-                'processing_eta_seconds' => null,
-                'current_profile_key' => null,
-                'processing_error' => null,
-                'last_processed_at' => $nextProcessingStatus === 'ready' ? now() : null,
-                'selected_hls_profiles' => [],
+            $movie->update([
+                'origin_country' => $primaryCountry,
+                'original_language' => filled($validated['original_language'] ?? null)
+                    ? strtolower(trim((string) $validated['original_language']))
+                    : (is_string(data_get($metadata, 'tmdb.original_language'))
+                        ? strtolower((string) data_get($metadata, 'tmdb.original_language'))
+                        : null),
+                'content_rating' => \App\Support\AgeRating::normalize(
+                    filled($validated['age_rating'] ?? null) ? trim((string) $validated['age_rating']) : null,
+                ),
             ]);
-        } elseif ($resolvedSourcePath) {
-            $movie->mediaAsset()->create([
-                'kind' => 'video',
-                'source_path' => $resolvedSourcePath,
-                'source_is_external' => $this->isPublicationSourceExternal($resolvedSourcePath),
-                'managed_relative_directory' => $movie->media_folder,
-                'hls_output_relative_directory' => $this->mediaPathService->hlsRelativeDirectory($movie->slug),
-                'master_playlist_relative_path' => (string) (($canonicalHlsUrl ?? $manualHlsUrlRaw) ?: ''),
-                'selected_hls_profiles' => [],
-                'processing_status' => $nextProcessingStatus,
-                'processing_progress_percent' => 0,
-                'processing_eta_seconds' => null,
-                'current_profile_key' => null,
-                'processing_error' => null,
-                'last_processed_at' => null,
-            ]);
+
+            if ($movie->mediaAsset) {
+                $movie->mediaAsset->update([
+                    'source_path' => $resolvedSourcePath ?: $movie->mediaAsset->source_path,
+                    'source_is_external' => $this->isPublicationSourceExternal($resolvedSourcePath ?: $movie->mediaAsset->source_path),
+                    'master_playlist_relative_path' => (string) (($canonicalHlsUrl ?? $manualHlsUrlRaw) ?: ''),
+                    'processing_status' => $nextProcessingStatus,
+                    'processing_progress_percent' => $nextProcessingStatus === 'ready' ? 100 : 0,
+                    'processing_eta_seconds' => null,
+                    'current_profile_key' => null,
+                    'processing_error' => null,
+                    'last_processed_at' => $nextProcessingStatus === 'ready' ? now() : null,
+                    'selected_hls_profiles' => [],
+                ]);
+            } elseif ($resolvedSourcePath) {
+                $movie->mediaAsset()->create([
+                    'kind' => 'video',
+                    'source_path' => $resolvedSourcePath,
+                    'source_is_external' => $this->isPublicationSourceExternal($resolvedSourcePath),
+                    'managed_relative_directory' => $movie->media_folder,
+                    'hls_output_relative_directory' => $this->mediaPathService->hlsRelativeDirectory($movie->slug),
+                    'master_playlist_relative_path' => (string) (($canonicalHlsUrl ?? $manualHlsUrlRaw) ?: ''),
+                    'selected_hls_profiles' => [],
+                    'processing_status' => $nextProcessingStatus,
+                    'processing_progress_percent' => 0,
+                    'processing_eta_seconds' => null,
+                    'current_profile_key' => null,
+                    'processing_error' => null,
+                    'last_processed_at' => null,
+                ]);
+            }
+        } catch (UniqueConstraintViolationException $exception) {
+            throw $this->mapMovieUniqueConstraintException($exception);
         }
 
         $movie->refresh();
