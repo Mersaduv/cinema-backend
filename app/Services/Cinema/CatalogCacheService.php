@@ -65,6 +65,7 @@ class CatalogCacheService
     public function forgetPublicSeriesCatalog(): void
     {
         $this->forgetByPattern('series_list_*');
+        $this->forgetByPattern('series_list_v2_*');
         $this->forgetByPattern('series_catalog_*');
     }
 

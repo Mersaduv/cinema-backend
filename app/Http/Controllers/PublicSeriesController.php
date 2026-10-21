@@ -20,6 +20,7 @@ use App\Services\Cinema\ImagePresentationService;
 use App\Services\Cinema\PublicContentCacheService;
 use App\Services\Cinema\RelatedContentService;
 use App\Services\Cinema\SeriesHlsPathService;
+use App\Services\Cinema\SeriesLatestEpisodeLookup;
 use App\Services\Cinema\WatchPlaybackService;
 use App\Services\TmdbService;
 use Illuminate\Http\JsonResponse;
@@ -44,6 +45,7 @@ class PublicSeriesController extends Controller
         private readonly ImagePresentationService $imagePresentationService,
         private readonly PublicContentCacheService $contentCacheService,
         private readonly WatchPlaybackService $watchPlaybackService,
+        private readonly SeriesLatestEpisodeLookup $seriesLatestEpisodeLookup,
     ) {
     }
 
@@ -109,7 +111,7 @@ class PublicSeriesController extends Controller
     {
         $perPage = min(max((int) $request->integer('per_page', 6), 1), 48);
         $cacheKey = $this->catalogCacheService->listCacheKey(
-            'series_list',
+            'series_list_v2',
             $this->catalogCacheService->catalogListFingerprint($request),
         );
 
@@ -119,9 +121,21 @@ class PublicSeriesController extends Controller
 
             $seriesIds = array_map(fn (array $row) => (int) $row['id'], $result['rows']);
             $genreMap = $this->catalogListResponseMapper->seriesGenreMap($seriesIds);
+            $sort = (string) ($params['sort'] ?? '');
+            $attachLatestEpisode = in_array($sort, ['updated', 'updated_desc'], true);
+            $latestEpisodeMap = $attachLatestEpisode
+                ? $this->seriesLatestEpisodeLookup->forSeriesIds($seriesIds)
+                : [];
 
             $items = array_map(
-                fn (array $row) => $this->catalogListResponseMapper->carouselSeriesItem($row, $genreMap),
+                function (array $row) use ($genreMap, $latestEpisodeMap) {
+                    $seriesId = (int) ($row['id'] ?? 0);
+                    if (isset($latestEpisodeMap[$seriesId])) {
+                        $row['latest_episode'] = $latestEpisodeMap[$seriesId];
+                    }
+
+                    return $this->catalogListResponseMapper->carouselSeriesItem($row, $genreMap);
+                },
                 $result['rows'],
             );
 
