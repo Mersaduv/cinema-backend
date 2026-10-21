@@ -12,6 +12,7 @@ use App\Models\MovieCast;
 use App\Models\MovieCrew;
 use App\Services\Cinema\AdminCatalogSummaryService;
 use App\Services\Cinema\AdminReferenceOptionsService;
+use App\Services\Cinema\HomeHeroFeaturedLimitService;
 use App\Services\Cinema\CatalogAdminRankingEnricher;
 use App\Services\Cinema\CatalogContentRankingSyncService;
 use App\Services\Cinema\CatalogPopularityPersistence;
@@ -66,6 +67,7 @@ class AdminMovieController extends Controller
         private readonly CountryCatalogService $countryCatalogService,
         private readonly AdminReferenceOptionsService $adminReferenceOptionsService,
         private readonly AdminCatalogSummaryService $adminCatalogSummaryService,
+        private readonly HomeHeroFeaturedLimitService $homeHeroFeaturedLimitService,
         private readonly CatalogListProcedureService $catalogListProcedureService,
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
@@ -89,7 +91,14 @@ class AdminMovieController extends Controller
         $visibility = (string) $request->string('catalog_visibility');
         $slider = (string) $request->string('slider');
 
-        $query = Movie::query()->with(['creator']);
+        $query = Movie::query()
+            ->select($this->adminMovieListColumns())
+            ->selectRaw('LEFT(COALESCE(synopsis, \'\'), 280) as synopsis')
+            ->selectRaw("JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tmdb.poster_url')) as list_tmdb_poster")
+            ->selectRaw("JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tmdb.synopsis_en')) as list_synopsis_en")
+            ->selectRaw("CASE WHEN NULLIF(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.admin_notes')), '') IS NULL OR JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.admin_notes')) = 'null' THEN 0 ELSE 1 END as list_has_admin_notes")
+            ->selectRaw("JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.publish.pending_intent.status')) as list_pending_intent")
+            ->with(['creator:id,name,email']);
         $this->catalogFilterQuery->apply($query, $request, 'movies', false);
 
         if (in_array($publishStatus, ['draft', 'scheduled', 'published'], true)) {
@@ -163,6 +172,7 @@ class AdminMovieController extends Controller
                     ['value' => 'search', 'label' => 'فقط جستجو'],
                     ['value' => 'hidden', 'label' => 'مخفی'],
                 ],
+                'home_hero_slider' => $this->homeHeroFeaturedLimitService->snapshot(),
                 'genres' => $this->adminReferenceOptionsService->genres(),
                 'countries' => $this->adminReferenceOptionsService->countries(),
                 'languages' => $this->adminReferenceOptionsService->languages(),
@@ -859,6 +869,12 @@ class AdminMovieController extends Controller
 
         if (Schema::hasColumn('movies', 'is_featured')) {
             $isFeatured = (bool) ($validated['is_featured'] ?? false);
+            $wasFeatured = (bool) ($movie->is_featured ?? false);
+
+            if ($isFeatured && ! $wasFeatured) {
+                $this->homeHeroFeaturedLimitService->assertCanEnableFeatured('movie', $movie->id);
+            }
+
             $movieUpdate['is_featured'] = $isFeatured;
 
             if (Schema::hasColumn('movies', 'exclude_from_slider')) {
@@ -1623,18 +1639,54 @@ class AdminMovieController extends Controller
         $this->catalogCacheService->scheduleRebuildAfterContentChange($paths);
     }
 
+    /**
+     * @return list<string>
+     */
+    private function adminMovieListColumns(): array
+    {
+        $columns = [
+            'id',
+            'title',
+            'slug',
+            'release_year',
+            'poster_path',
+            'has_dubbed_audio',
+            'has_subtitle',
+            'publish_status',
+            'pipeline_status',
+            'processing_status',
+            'processing_error',
+            'views_count',
+            'created_at',
+            'updated_at',
+            'created_by',
+        ];
+
+        foreach (['is_featured', 'exclude_from_slider', 'catalog_visibility'] as $column) {
+            if (Schema::hasColumn('movies', $column)) {
+                $columns[] = $column;
+            }
+        }
+
+        return $columns;
+    }
+
     private function transformMovieListItem(Movie $movie): array
     {
-        $movie->loadMissing(['creator']);
+        $movie->loadMissing(['creator:id,name,email']);
         $metadata = is_array($movie->metadata) ? $movie->metadata : [];
+        $slimList = array_key_exists('list_has_admin_notes', $movie->getAttributes());
 
         return [
             'id' => $movie->id,
             'title' => $movie->title,
             'slug' => $movie->slug,
-            'synopsis' => $movie->synopsis ?: data_get($metadata, 'tmdb.synopsis_en'),
+            'synopsis' => $movie->synopsis ?: ($slimList ? $movie->getAttribute('list_synopsis_en') : data_get($metadata, 'tmdb.synopsis_en')),
             'release_year' => $movie->release_year,
-            'poster_url' => $this->resolveManagedOrExternalUrl($movie->poster_path, data_get($metadata, 'tmdb.poster_url')),
+            'poster_url' => $this->resolveManagedOrExternalUrl(
+                $movie->poster_path,
+                $slimList ? $movie->getAttribute('list_tmdb_poster') : data_get($metadata, 'tmdb.poster_url'),
+            ),
             'has_dubbed_audio' => $movie->has_dubbed_audio,
             'has_subtitle' => $movie->has_subtitle,
             'publish_status' => $movie->publish_status,
@@ -1650,8 +1702,15 @@ class AdminMovieController extends Controller
             'catalog_visibility' => Schema::hasColumn('movies', 'catalog_visibility')
                 ? (string) ($movie->catalog_visibility ?? 'catalog_search')
                 : 'catalog_search',
-            'has_admin_notes' => filled(data_get($metadata, 'admin_notes')),
-            'publish_completion_pending' => $this->hasPublishCompletionPending($movie, $metadata),
+            'has_admin_notes' => $slimList
+                ? (bool) $movie->getAttribute('list_has_admin_notes')
+                : filled(data_get($metadata, 'admin_notes')),
+            'publish_completion_pending' => $slimList
+                ? ($movie->publish_status === 'draft'
+                    && $movie->processing_status === 'ready'
+                    && filled($movie->getAttribute('list_pending_intent'))
+                    && $movie->getAttribute('list_pending_intent') !== 'null')
+                : $this->hasPublishCompletionPending($movie, $metadata),
             'views_count' => (int) ($movie->views_count ?? 0),
             'created_at' => $movie->created_at?->toISOString(),
             'updated_at' => $movie->updated_at?->toISOString(),

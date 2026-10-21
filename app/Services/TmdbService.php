@@ -1020,6 +1020,7 @@ class TmdbService
             $fallbackPayload,
             is_array($seasonListItem) ? $seasonListItem : null,
             $this->resolveSeasonListItem($fallbackPayload, $seasonNumber),
+            autoTranslateEpisodes: false,
         );
     }
 
@@ -1031,6 +1032,7 @@ class TmdbService
         ?array $fallbackPayload,
         ?array $seasonListItem,
         ?array $englishSeasonListItem = null,
+        bool $autoTranslateEpisodes = true,
     ): array {
         $seasonMeta = is_array($seasonListItem) ? $seasonListItem : [];
         $englishSeasonMeta = is_array($englishSeasonListItem) ? $englishSeasonListItem : [];
@@ -1086,6 +1088,7 @@ class TmdbService
                 $fallbackPayload,
                 $persianEpisodeOverviews,
                 $englishEpisodeOverviews,
+                $autoTranslateEpisodes,
             ) {
                 $episodeNumber = (int) ($episode['episode_number'] ?? 0);
 
@@ -1100,6 +1103,7 @@ class TmdbService
                             ? null
                             : ($episode['overview'] ?? null),
                     ),
+                    $autoTranslateEpisodes,
                 );
 
                 return [
@@ -1989,47 +1993,37 @@ class TmdbService
             return [];
         }
 
-        $accessToken = trim((string) config('services.tmdb.access_token'));
-        $apiKey = trim((string) config('services.tmdb.api_key'));
-        $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
         $results = [];
 
-        foreach (array_chunk($episodeNumbers, 8) as $episodeChunk) {
-            $responses = Http::pool(function (\Illuminate\Http\Client\Pool $pool) use (
-                $episodeChunk,
-                $seriesId,
-                $seasonNumber,
-                $accessToken,
-                $apiKey,
-                $baseUrl,
-            ) {
-                foreach ($episodeChunk as $episodeNumber) {
-                    $url = "{$baseUrl}/tv/{$seriesId}/season/{$seasonNumber}/episode/{$episodeNumber}/translations";
-                    $request = $this->configureHttpClient(
-                        $pool->as("ep_{$episodeNumber}")->acceptJson()->timeout(20)
-                    );
+        try {
+            foreach (array_chunk($episodeNumbers, 12) as $episodeChunk) {
+                $requests = [];
 
-                    if ($accessToken !== '') {
-                        $request->withToken($accessToken)->get($url);
-                    } else {
-                        $request->get($url, ['api_key' => $apiKey]);
+                foreach ($episodeChunk as $episodeNumber) {
+                    $requests["ep_{$episodeNumber}"] = [
+                        "/tv/{$seriesId}/season/{$seasonNumber}/episode/{$episodeNumber}/translations",
+                        [],
+                    ];
+                }
+
+                $responses = $this->requestParallelKeyed($requests, attempts: 1, timeoutSeconds: 8);
+
+                foreach ($episodeChunk as $episodeNumber) {
+                    $payload = $responses["ep_{$episodeNumber}"] ?? null;
+
+                    if (! is_array($payload) || $payload === []) {
+                        continue;
+                    }
+
+                    $overview = $this->extractPersianOverviewFromTranslationsPayload($payload);
+
+                    if ($overview) {
+                        $results[$episodeNumber] = $overview;
                     }
                 }
-            });
-
-            foreach ($episodeChunk as $episodeNumber) {
-                $response = $responses["ep_{$episodeNumber}"] ?? null;
-
-                if (! $response || ! $response->successful()) {
-                    continue;
-                }
-
-                $overview = $this->extractPersianOverviewFromTranslationsPayload($response->json() ?? []);
-
-                if ($overview) {
-                    $results[$episodeNumber] = $overview;
-                }
             }
+        } catch (\Throwable) {
+            return $results;
         }
 
         return $results;

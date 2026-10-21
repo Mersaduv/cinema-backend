@@ -131,6 +131,7 @@ class CatalogCarouselService
             'filter_popularity' => $movie->filter_popularity ?? null,
             'popular_hybrid_score' => $movie->popular_hybrid_score ?? null,
             'published_at' => $movie->published_at,
+            'updated_at' => $movie->updated_at,
             'metadata' => $movie->metadata,
         ];
     }
@@ -159,6 +160,7 @@ class CatalogCarouselService
             'filter_popularity' => $series->filter_popularity ?? null,
             'popular_hybrid_score' => $series->popular_hybrid_score ?? null,
             'published_at' => $series->published_at,
+            'updated_at' => $series->updated_at,
             'metadata' => $series->metadata,
         ];
     }
@@ -181,6 +183,7 @@ class CatalogCarouselService
             'filter_popularity',
             'popular_hybrid_score',
             'published_at',
+            'updated_at',
             'metadata',
         ];
     }
@@ -209,6 +212,7 @@ class CatalogCarouselService
             'filter_popularity',
             'popular_hybrid_score',
             'published_at',
+            'updated_at',
             'metadata',
         ];
     }
@@ -238,6 +242,7 @@ class CatalogCarouselService
             'release_year_desc', 'year_desc', 'release_year_asc', 'year_asc' => $row['release_year'] ?? null,
             'title_asc', 'title_desc' => $row['title'] ?? null,
             'oldest', 'newest', 'featured' => $row['published_at'] ?? $row['id'],
+            'updated', 'updated_desc' => $row['updated_at'] ?? $row['published_at'] ?? $row['id'],
             default => $row['published_at'] ?? $row['id'],
         };
 

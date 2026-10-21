@@ -94,7 +94,7 @@ class CatalogCacheInvalidationTest extends TestCase
         putenv('NEXT_REVALIDATION_URL=http://cinema-frontend.test');
 
         Http::fake([
-            'http://cinema-frontend.test/api/revalidate' => Http::response(['revalidated' => true], 200),
+            'http://cinema-frontend.test/edge/revalidate' => Http::response(['revalidated' => true], 200),
         ]);
 
         $admin = $this->createAdminUser();
@@ -111,7 +111,7 @@ class CatalogCacheInvalidationTest extends TestCase
         $this->deleteJson('/api/admin/movies/'.$movieId)->assertOk();
 
         Http::assertSent(function ($request): bool {
-            if ($request->url() !== 'http://cinema-frontend.test/api/revalidate') {
+            if ($request->url() !== 'http://cinema-frontend.test/edge/revalidate') {
                 return false;
             }
 
@@ -128,7 +128,7 @@ class CatalogCacheInvalidationTest extends TestCase
         putenv('NEXT_REVALIDATION_URL=http://cinema-frontend.test');
 
         Http::fake([
-            'http://cinema-frontend.test/api/revalidate' => Http::response(['revalidated' => true], 200),
+            'http://cinema-frontend.test/edge/revalidate' => Http::response(['revalidated' => true], 200),
         ]);
 
         $admin = $this->createAdminUser();
@@ -146,7 +146,7 @@ class CatalogCacheInvalidationTest extends TestCase
         $this->deleteJson('/api/admin/series/'.$series->id)->assertOk();
 
         Http::assertSent(function ($request): bool {
-            if ($request->url() !== 'http://cinema-frontend.test/api/revalidate') {
+            if ($request->url() !== 'http://cinema-frontend.test/edge/revalidate') {
                 return false;
             }
 

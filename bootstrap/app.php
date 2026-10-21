@@ -12,6 +12,18 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // IIS ARR reverse-proxy (cinema.af:80 -> :8005/:3000)
+        $middleware->trustProxies(at: '*');
+
+        // API has no named "login" route — never redirect guests to route('login').
+        $middleware->redirectGuestsTo(function ($request) {
+            if ($request->is('api/*') || $request->expectsJson()) {
+                return null;
+            }
+
+            return rtrim((string) env('FRONTEND_URL', 'http://cinema.af'), '/').'/login';
+        });
+
         $middleware->api(append: [
             \App\Http\Middleware\PublishScheduledContentMiddleware::class,
         ]);
@@ -24,6 +36,17 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        $exceptions->render(function (\Illuminate\Auth\AuthenticationException $exception, $request) {
+            if ($request->is('api/*') || $request->expectsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthenticated.',
+                ], 401);
+            }
+
+            return null;
+        });
+
         $exceptions->render(function (\Illuminate\Http\Exceptions\PostTooLargeException $exception, $request) {
             if ($request->expectsJson() || $request->is('api/*')) {
                 return response()->json([

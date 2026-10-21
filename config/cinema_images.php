@@ -15,6 +15,11 @@ return [
 
     'responsive_widths' => [256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840],
 
+    // Catalog/home cards (MovieLand-style): poster thumbs only — never ship 1080–3840w in list JSON.
+    'card_responsive_widths' => [256, 384, 640],
+
+    'card_default_src_width' => 384,
+
     'responsive_quality' => 65,
 
     'responsive_sharpen' => 60,

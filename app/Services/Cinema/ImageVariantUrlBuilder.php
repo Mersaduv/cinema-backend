@@ -7,14 +7,20 @@ class ImageVariantUrlBuilder
     /**
      * @return array<string, mixed>
      */
+    /**
+     * @param  'full'|'card'  $profile  card = slim srcset for catalog/home rails
+     * @return array<string, mixed>
+     */
     public function buildFromPublicPath(
         string $publicPath,
         ?string $mimeType = null,
         ?int $width = null,
         ?int $height = null,
+        string $profile = 'full',
     ): array {
         $original = $this->buildAbsoluteOrRelativeUrl($publicPath);
         $isSvg = $mimeType === 'image/svg+xml' || str_ends_with(strtolower($publicPath), '.svg');
+        $isCard = $profile === 'card';
 
         $blurParams = $isSvg
             ? ['width' => 256, 'quality' => 95, 'sharpen' => 60]
@@ -26,8 +32,12 @@ class ImageVariantUrlBuilder
 
         $responsiveQuality = $isSvg ? 95 : (int) config('cinema_images.responsive_quality', 65);
         $responsiveSharpen = (int) config('cinema_images.responsive_sharpen', 60);
-        $defaultSrcWidth = (int) config('cinema_images.default_src_width', 384);
-        $widths = config('cinema_images.responsive_widths', [256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840]);
+        $defaultSrcWidth = $isCard
+            ? (int) config('cinema_images.card_default_src_width', 384)
+            : (int) config('cinema_images.default_src_width', 384);
+        $widths = $isCard
+            ? config('cinema_images.card_responsive_widths', [256, 384, 640])
+            : config('cinema_images.responsive_widths', [256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840]);
 
         $srcset = [];
         foreach ($widths as $variantWidth) {

@@ -205,6 +205,53 @@ class ImagePresentationService
     }
 
     /**
+     * MovieLand-style catalog/home card posters: tiny srcset (≤640w), no full-bleed widths.
+     *
+     * @param  array<string, mixed>|null  $stored
+     * @return array{url: ?string, blur: ?string, srcset_string: ?string, image: ?array<string, mixed>}
+     */
+    public function catalogCardPoster(?string $url, ?array $stored = null): array
+    {
+        $original = $this->resolvePreferredUrl(
+            data_get($stored, 'original'),
+            $url,
+        );
+
+        if (! filled($original)) {
+            return [
+                'url' => null,
+                'blur' => null,
+                'srcset_string' => null,
+                'image' => null,
+            ];
+        }
+
+        if (! $this->variantUrlBuilder->isManagedPublicUrl((string) $original)) {
+            return [
+                'url' => (string) $original,
+                'blur' => null,
+                'srcset_string' => null,
+                'image' => null,
+            ];
+        }
+
+        $built = $this->variantUrlBuilder->buildFromPublicPath(
+            (string) $original,
+            is_array($stored) ? ($stored['mime_type'] ?? null) : null,
+            is_array($stored) && isset($stored['width']) ? (int) $stored['width'] : null,
+            is_array($stored) && isset($stored['height']) ? (int) $stored['height'] : null,
+            'card',
+        );
+
+        return [
+            'url' => (string) ($built['original'] ?? $original),
+            'blur' => $built['blur'] ?? null,
+            'srcset_string' => $built['srcset_string'] ?? null,
+            'image' => $built,
+        ];
+    }
+
+    /**
      * @param  mixed  $stored
      * @return ?array<string, mixed>
      */

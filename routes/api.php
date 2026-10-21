@@ -61,6 +61,7 @@ Route::post('/staff/login', [AuthController::class, 'staffLogin']);
 Route::middleware('throttle:90,1')->group(function () {
     Route::get('/filter-options', FilterOptionsController::class);
     Route::get('/home/critical', [PublicHomeController::class, 'critical']);
+    Route::get('/home/latest-episodes', [PublicHomeController::class, 'latestEpisodes']);
     Route::get('/search', SearchController::class);
 
     Route::get('/movies', [PublicMovieController::class, 'index']);

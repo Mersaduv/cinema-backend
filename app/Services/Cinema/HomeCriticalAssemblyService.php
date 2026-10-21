@@ -2,24 +2,27 @@
 
 namespace App\Services\Cinema;
 
-use App\Http\Controllers\FilterOptionsController;
 use App\Http\Controllers\PublicMovieController;
 use App\Http\Controllers\PublicSeriesController;
 use Illuminate\Http\Request;
 
 class HomeCriticalAssemblyService
 {
-    private const FEATURED_POOL = 8;
+    private const FEATURED_POOL = 7;
     private const RAIL_PER_PAGE = 6;
-    private const EDITORIAL_MAX = 8;
+    private const EDITORIAL_MAX = 7;
+    /** Slim newest pools merged client-side into the first home rail (cap 20). */
+    private const SITE_FRESH_POOL = 8;
 
     /**
+     * Above-the-fold home bootstrap only.
+     * filter_options (~28KB) load in deferred genre rails — MovieLand-style split.
+     *
      * @return array<string, mixed>
      */
     public function assemble(): array
     {
         return [
-            'filter_options' => $this->filterOptionsPayload(),
             'latest_movies' => $this->movies(['sort' => 'release_year_desc', 'page' => 1, 'per_page' => self::FEATURED_POOL]),
             'latest_series' => $this->series(['sort' => 'release_year_desc', 'page' => 1, 'per_page' => self::FEATURED_POOL]),
             'editorial_featured_movies' => $this->movies(['sort' => 'featured', 'page' => 1, 'per_page' => self::EDITORIAL_MAX]),
@@ -31,17 +34,9 @@ class HomeCriticalAssemblyService
             'trending_fallback_movies' => $this->movies(['sort' => 'popular', 'carousel' => '1', 'page' => 1, 'per_page' => self::RAIL_PER_PAGE]),
             'trending_fallback_series' => $this->series(['sort' => 'popular', 'carousel' => '1', 'page' => 1, 'per_page' => self::RAIL_PER_PAGE]),
             'popular_movies' => $this->movies(['sort' => 'popular', 'carousel' => '1', 'page' => 1, 'per_page' => self::RAIL_PER_PAGE]),
+            'site_fresh_movies' => $this->movies(['sort' => 'updated', 'carousel' => '1', 'page' => 1, 'per_page' => self::SITE_FRESH_POOL]),
+            'site_fresh_series' => $this->series(['sort' => 'updated', 'carousel' => '1', 'page' => 1, 'per_page' => self::SITE_FRESH_POOL]),
         ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function filterOptionsPayload(): array
-    {
-        $response = app(FilterOptionsController::class)();
-
-        return (array) ($response->getData(true)['data'] ?? $response->getData(true));
     }
 
     /**

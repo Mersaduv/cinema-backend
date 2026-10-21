@@ -95,7 +95,7 @@ class NextPublicCacheRevalidationService
             return;
         }
 
-        $endpoint = rtrim($url, '/').'/api/revalidate';
+        $endpoint = rtrim($url, '/').'/edge/revalidate';
 
         try {
             $response = Http::timeout(8)->acceptJson()->asJson()->post($endpoint, [

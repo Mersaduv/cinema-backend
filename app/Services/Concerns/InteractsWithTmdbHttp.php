@@ -103,7 +103,11 @@ trait InteractsWithTmdbHttp
      * @param  array<string, array{0: string, 1: array<string, mixed>}>  $keyedRequests
      * @return array<string, array<string, mixed>>
      */
-    protected function requestParallelKeyed(array $keyedRequests): array
+    protected function requestParallelKeyed(
+        array $keyedRequests,
+        int $attempts = self::TMDB_HTTP_RETRY_ATTEMPTS,
+        int $timeoutSeconds = self::TMDB_HTTP_TIMEOUT_SECONDS,
+    ): array
     {
         $results = [];
         $pending = [];
@@ -131,7 +135,10 @@ trait InteractsWithTmdbHttp
             throw new RuntimeException('TMDB credentials are not configured.');
         }
 
-        for ($attempt = 1; $attempt <= self::TMDB_HTTP_RETRY_ATTEMPTS; $attempt++) {
+        $attempts = max(1, $attempts);
+        $timeoutSeconds = max(3, $timeoutSeconds);
+
+        for ($attempt = 1; $attempt <= $attempts; $attempt++) {
             if ($pending === []) {
                 break;
             }
@@ -141,11 +148,11 @@ trait InteractsWithTmdbHttp
             $apiKey = $creds['api_key'];
             $baseUrl = rtrim((string) config('services.tmdb.base_url'), '/');
 
-            $responses = Http::pool(function (Pool $pool) use ($pending, $baseUrl, $accessToken, $apiKey) {
+            $responses = Http::pool(function (Pool $pool) use ($pending, $baseUrl, $accessToken, $apiKey, $timeoutSeconds) {
                 foreach ($pending as $key => [$path, $query]) {
                     $url = $baseUrl.$path;
                     $request = $this->configureHttpClient(
-                        $pool->as((string) $key)->acceptJson()->timeout(self::TMDB_HTTP_TIMEOUT_SECONDS)
+                        $pool->as((string) $key)->acceptJson()->timeout($timeoutSeconds)
                     );
 
                     if ($accessToken !== '') {
@@ -162,7 +169,7 @@ trait InteractsWithTmdbHttp
                 $response = $responses[(string) $key] ?? null;
 
                 if (! $response instanceof Response || ! $response->successful()) {
-                    if ($attempt < self::TMDB_HTTP_RETRY_ATTEMPTS) {
+                    if ($attempt < $attempts) {
                         $nextPending[$key] = [$path, $query, $cacheKey];
                     } else {
                         $results[$key] = [];
@@ -182,7 +189,7 @@ trait InteractsWithTmdbHttp
 
             $pending = $nextPending;
 
-            if ($pending !== [] && $attempt < self::TMDB_HTTP_RETRY_ATTEMPTS) {
+            if ($pending !== [] && $attempt < $attempts) {
                 usleep(250_000 * $attempt);
             }
         }

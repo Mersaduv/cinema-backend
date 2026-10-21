@@ -8,6 +8,7 @@ use App\Models\Series;
 use App\Models\ContentChangeLog;
 use App\Services\Cinema\AdminCatalogSummaryService;
 use App\Services\Cinema\AdminReferenceOptionsService;
+use App\Services\Cinema\HomeHeroFeaturedLimitService;
 use App\Services\Cinema\CatalogAdminRankingEnricher;
 use App\Services\Cinema\CatalogContentRankingSyncService;
 use App\Services\Cinema\CatalogPopularityPersistence;
@@ -62,6 +63,7 @@ class AdminSeriesController extends Controller
         private readonly CountryCatalogService $countryCatalogService,
         private readonly AdminReferenceOptionsService $adminReferenceOptionsService,
         private readonly AdminCatalogSummaryService $adminCatalogSummaryService,
+        private readonly HomeHeroFeaturedLimitService $homeHeroFeaturedLimitService,
         private readonly CatalogListProcedureService $catalogListProcedureService,
         private readonly CatalogListResponseMapper $catalogListResponseMapper,
         private readonly CatalogCacheService $catalogCacheService,
@@ -101,8 +103,12 @@ class AdminSeriesController extends Controller
         }
 
         $query = Series::query()
-            ->with(['creator'])
-            ->withCount(['seasons', 'episodes']);
+            ->select($this->adminSeriesListColumns())
+            ->selectRaw('LEFT(COALESCE(synopsis, \'\'), 280) as synopsis')
+            ->selectRaw("JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tmdb.poster_url')) as list_tmdb_poster")
+            ->selectRaw("JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tmdb.synopsis_en')) as list_synopsis_en")
+            ->selectRaw("CASE WHEN NULLIF(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.admin_notes')), '') IS NULL OR JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.admin_notes')) = 'null' THEN 0 ELSE 1 END as list_has_admin_notes")
+            ->with(['creator:id,name,email']);
         $this->catalogFilterQuery->apply($query, $request, 'series', false);
 
         if (in_array($publishStatus, ['draft', 'scheduled', 'published'], true)) {
@@ -239,6 +245,7 @@ class AdminSeriesController extends Controller
                     ['value' => 'search', 'label' => 'فقط نتایج جستجو'],
                     ['value' => 'hidden', 'label' => 'مخفی'],
                 ],
+                'home_hero_slider' => $this->homeHeroFeaturedLimitService->snapshot(),
                 'genres' => $this->adminReferenceOptionsService->genres(),
                 'countries' => $this->adminReferenceOptionsService->countries(),
                 'languages' => $this->adminReferenceOptionsService->languages(),
@@ -347,6 +354,10 @@ class AdminSeriesController extends Controller
         $alignedGenres = $this->alignGenresFromValidated($validated);
         $validated = $this->applyLocalizedContentSynopsis($validated);
 
+        if ((bool) ($validated['is_featured'] ?? false)) {
+            $this->homeHeroFeaturedLimitService->assertCanEnableFeatured('series');
+        }
+
         try {
             $series = DB::transaction(function () use ($validated, $request, $alignedGenres) {
                 $slug = $this->resolveUniqueSlug([
@@ -452,6 +463,11 @@ class AdminSeriesController extends Controller
 
         $alignedGenres = $this->alignGenresFromValidated($validated);
         $validated = $this->applyLocalizedContentSynopsis($validated, $series);
+
+        $wantFeatured = (bool) ($validated['is_featured'] ?? false);
+        if ($wantFeatured && ! (bool) $series->is_featured) {
+            $this->homeHeroFeaturedLimitService->assertCanEnableFeatured('series', $series->id);
+        }
 
         $this->watchProgressLifecycle->purgeForSeries($series->id);
 
@@ -1529,14 +1545,49 @@ class AdminSeriesController extends Controller
         );
     }
 
+    /**
+     * @return list<string>
+     */
+    private function adminSeriesListColumns(): array
+    {
+        $columns = [
+            'id',
+            'title',
+            'slug',
+            'first_air_date',
+            'status',
+            'network',
+            'poster_url',
+            'has_subtitle',
+            'has_dubbed',
+            'is_featured',
+            'exclude_from_slider',
+            'publish_status',
+            'pipeline_status',
+            'number_of_seasons',
+            'number_of_episodes',
+            'views_count',
+            'created_at',
+            'updated_at',
+            'created_by',
+        ];
+
+        if (Schema::hasColumn('series', 'catalog_visibility')) {
+            $columns[] = 'catalog_visibility';
+        }
+
+        return $columns;
+    }
+
     private function transformSeriesListItem(Series $series): array
     {
-        $series->loadMissing(['creator']);
+        $series->loadMissing(['creator:id,name,email']);
         $metadata = is_array($series->metadata) ? $series->metadata : [];
-        $posterImage = $this->imagePresentationService->seriesPosterImage($metadata);
+        $slimList = array_key_exists('list_has_admin_notes', $series->getAttributes());
+        $posterImage = $slimList ? null : $this->imagePresentationService->seriesPosterImage($metadata);
 
         $synopsisFallback = $series->synopsis
-            ?: data_get($metadata, 'tmdb.synopsis_en')
+            ?: ($slimList ? $series->getAttribute('list_synopsis_en') : data_get($metadata, 'tmdb.synopsis_en'))
             ?: data_get($metadata, 'tmdb.synopsis_fa');
 
         return [
@@ -1547,7 +1598,9 @@ class AdminSeriesController extends Controller
             'first_air_date' => $series->first_air_date?->toDateString(),
             'status' => $series->status,
             'network' => $series->network,
-            'poster_url' => $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
+            'poster_url' => $slimList
+                ? ($series->poster_url ?: $series->getAttribute('list_tmdb_poster'))
+                : $this->imagePresentationService->resolveSeriesPosterUrl($series->poster_url, $metadata),
             'poster_blur_url' => data_get($posterImage, 'blur'),
             'poster_srcset' => data_get($posterImage, 'srcset_string'),
             'poster_image' => $posterImage,
@@ -1557,12 +1610,14 @@ class AdminSeriesController extends Controller
             'exclude_from_slider' => (bool) ($series->exclude_from_slider ?? false),
             'publish_status' => $series->publish_status,
             'pipeline_status' => $series->pipeline_status ?? 'idle',
-            'seasons_count' => (int) ($series->getAttribute('seasons_count') ?? 0),
-            'episodes_count' => (int) ($series->getAttribute('episodes_count') ?? 0),
+            'seasons_count' => (int) ($series->getAttribute('seasons_count') ?? $series->number_of_seasons ?? 0),
+            'episodes_count' => (int) ($series->getAttribute('episodes_count') ?? $series->number_of_episodes ?? 0),
             'created_at' => $series->created_at?->toISOString(),
             'updated_at' => $series->updated_at?->toISOString(),
             'created_by' => $series->creator?->only(['id', 'name', 'email']),
-            'has_admin_notes' => filled(data_get($metadata, 'admin_notes')),
+            'has_admin_notes' => $slimList
+                ? (bool) $series->getAttribute('list_has_admin_notes')
+                : filled(data_get($metadata, 'admin_notes')),
             'views_count' => (int) ($series->views_count ?? 0),
         ];
     }
