@@ -1292,9 +1292,6 @@ class AdminSeriesController extends Controller
 
     private function syncSeasons(Series $series, array $seasons, ?string $seriesHlsBase = null): void
     {
-        $seriesHlsBase = $seriesHlsBase
-            ?: data_get($series->metadata, 'playback.hls_base_url');
-
         $payloadSeasonNumbers = collect($seasons)
             ->map(fn (array $season) => (int) ($season['season_number'] ?? 0))
             ->filter(fn (int $number) => $number > 0)
@@ -1323,13 +1320,12 @@ class AdminSeriesController extends Controller
         collect($seasons)
             ->sortBy(fn (array $season) => (int) ($season['season_number'] ?? 0))
             ->values()
-            ->each(function (array $seasonPayload, int $seasonIndex) use ($series, $seriesHlsBase, &$seasonsByNumber) {
+            ->each(function (array $seasonPayload, int $seasonIndex) use ($series, &$seasonsByNumber) {
                 $episodes = collect($seasonPayload['episodes'] ?? [])
                     ->sortBy(fn (array $episode) => (int) ($episode['episode_number'] ?? 0))
                     ->values();
                 $seasonNumber = (int) $seasonPayload['season_number'];
-                $seasonHlsBase = $this->nullableString($seasonPayload['hls_base_url'] ?? null)
-                    ?: $this->seriesHlsPathService->buildSeasonHlsBase($seriesHlsBase, $seasonNumber);
+                $seasonHlsBase = $this->nullableString($seasonPayload['hls_base_url'] ?? null);
 
                 $existingSeason = $seasonsByNumber->get($seasonNumber);
                 $existingSeasonMetadata = is_array($existingSeason?->metadata)
@@ -2324,13 +2320,10 @@ class AdminSeriesController extends Controller
     {
         $series->loadMissing(['seasons']);
         $existing = $series->seasons->firstWhere('season_number', $seasonNumber);
-
-        $seriesHlsBase = data_get($series->metadata, 'playback.hls_base_url');
-        $seasonHlsBase = $this->nullableString($seasonContext['hls_base_url'] ?? null)
-            ?: $this->seriesHlsPathService->buildSeasonHlsBase($seriesHlsBase, $seasonNumber);
+        $seasonHlsBase = $this->nullableString($seasonContext['hls_base_url'] ?? null);
 
         if ($existing instanceof SeriesSeason) {
-            if (filled($seasonContext['hls_base_url'] ?? null)) {
+            if ($seasonHlsBase) {
                 $metadata = is_array($existing->metadata) ? $existing->metadata : [];
                 $existing->update([
                     'metadata' => array_replace_recursive($metadata, [
