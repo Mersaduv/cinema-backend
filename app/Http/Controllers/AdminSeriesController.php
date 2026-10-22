@@ -1428,6 +1428,8 @@ class AdminSeriesController extends Controller
             $existingEpisodes,
             &$upsertRows,
             $timestamp,
+            $episodeArrival,
+            $storesArrivedAt,
         ) {
             $episodeNumber = (int) $episodePayload['episode_number'];
             $episodeTitle = $this->nullableString($episodePayload['title'] ?? null)
