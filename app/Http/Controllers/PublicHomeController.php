@@ -38,7 +38,7 @@ class PublicHomeController extends Controller
     public function latestEpisodes(Request $request): JsonResponse
     {
         $limit = min(max((int) $request->integer('limit', 12), 1), 20);
-        $cacheKey = 'home_latest_episodes_v4_'.$limit.'_g'.$this->contentCacheService->homeCriticalKey();
+        $cacheKey = 'home_latest_episodes_v5_'.$limit.'_g'.$this->contentCacheService->homeCriticalKey();
         $ttl = min(180, $this->contentCacheService->homeCriticalTtl());
 
         $items = Cache::remember($cacheKey, $ttl, function () use ($limit) {

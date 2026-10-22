@@ -122,7 +122,7 @@ class PublicSeriesController extends Controller
             $seriesIds = array_map(fn (array $row) => (int) $row['id'], $result['rows']);
             $genreMap = $this->catalogListResponseMapper->seriesGenreMap($seriesIds);
             $sort = (string) ($params['sort'] ?? '');
-            $attachLatestEpisode = in_array($sort, ['updated', 'updated_desc'], true);
+            $attachLatestEpisode = in_array($sort, ['updated', 'updated_desc', 'episode_arrived'], true);
             $latestEpisodeMap = $attachLatestEpisode
                 ? $this->seriesLatestEpisodeLookup->forSeriesIds($seriesIds)
                 : [];

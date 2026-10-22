@@ -34,8 +34,8 @@ class HomeCriticalAssemblyService
             'trending_fallback_movies' => $this->movies(['sort' => 'popular', 'carousel' => '1', 'page' => 1, 'per_page' => self::RAIL_PER_PAGE]),
             'trending_fallback_series' => $this->series(['sort' => 'popular', 'carousel' => '1', 'page' => 1, 'per_page' => self::RAIL_PER_PAGE]),
             'popular_movies' => $this->movies(['sort' => 'popular', 'carousel' => '1', 'page' => 1, 'per_page' => self::RAIL_PER_PAGE]),
-            'site_fresh_movies' => $this->movies(['sort' => 'updated', 'carousel' => '1', 'page' => 1, 'per_page' => self::SITE_FRESH_POOL]),
-            'site_fresh_series' => $this->series(['sort' => 'updated', 'carousel' => '1', 'page' => 1, 'per_page' => self::SITE_FRESH_POOL]),
+            'site_fresh_movies' => $this->movies(['sort' => 'newest', 'carousel' => '1', 'page' => 1, 'per_page' => self::SITE_FRESH_POOL]),
+            'site_fresh_series' => $this->series(['sort' => 'episode_arrived', 'carousel' => '1', 'page' => 1, 'per_page' => self::SITE_FRESH_POOL]),
         ];
     }
 

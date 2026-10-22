@@ -61,6 +61,10 @@ class CatalogCarouselService
         $cursor = CatalogCarouselCursor::decode($request->string('cursor')->toString() ?: null);
         $params = $this->catalogFilterQuery->procedureParams($request, 'series');
 
+        if (strtolower(trim((string) ($params['sort'] ?? ''))) === 'episode_arrived') {
+            return $this->fetchSeriesByEpisodeArrival($request, $perPage, $cursor);
+        }
+
         if ($cursor === null) {
             $page = max(1, (int) $request->integer('page', 1));
             $result = $this->catalogListProcedureService->publicSeriesCatalog(
@@ -91,6 +95,32 @@ class CatalogCarouselService
         $total = $this->countSeries($request);
 
         return $this->finalizeResult($rows, $total, 0, $perPage);
+    }
+
+    /**
+     * @param  array{id: int, sort: mixed}|null  $cursor
+     * @return array{rows: array<int, array<string, mixed>>, total: int, current_page: int}
+     */
+    private function fetchSeriesByEpisodeArrival(Request $request, int $perPage, ?array $cursor): array
+    {
+        $query = Series::query()->where('publish_status', 'published');
+        $this->catalogFilterQuery->apply($query, $request, 'series');
+        $this->catalogFilterQuery->applyCursor($query, $cursor, 'episode_arrived', 'series');
+
+        $columns = array_map(
+            fn (string $column) => 'series.'.$column,
+            $this->seriesSelectColumns(),
+        );
+        $query->select($columns);
+        $query->addSelect([
+            'episode_arrived_at' => (new EpisodeArrival())->latestArrivedAtQuery(),
+        ]);
+
+        $models = $query->limit($perPage + 1)->get();
+        $rows = $models->map(fn (Series $series) => $this->seriesToRow($series))->all();
+        $total = $this->countSeries($request);
+
+        return $this->finalizeResult($rows, $total, max(1, (int) $request->integer('page', 1)), $perPage);
     }
 
     /**
@@ -161,6 +191,7 @@ class CatalogCarouselService
             'popular_hybrid_score' => $series->popular_hybrid_score ?? null,
             'published_at' => $series->published_at,
             'updated_at' => $series->updated_at,
+            'episode_arrived_at' => $series->getAttribute('episode_arrived_at'),
             'metadata' => $series->metadata,
         ];
     }
@@ -243,6 +274,7 @@ class CatalogCarouselService
             'title_asc', 'title_desc' => $row['title'] ?? null,
             'oldest', 'newest', 'featured' => $row['published_at'] ?? $row['id'],
             'updated', 'updated_desc' => $row['updated_at'] ?? $row['published_at'] ?? $row['id'],
+            'episode_arrived' => $row['episode_arrived_at'] ?? $row['id'],
             default => $row['published_at'] ?? $row['id'],
         };
 

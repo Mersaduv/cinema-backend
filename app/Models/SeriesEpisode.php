@@ -27,6 +27,7 @@ class SeriesEpisode extends Model
         'subtitle_url',
         'dubbed_audio_url',
         'publish_status',
+        'arrived_at',
         'sort_order',
         'metadata',
     ];
@@ -35,6 +36,7 @@ class SeriesEpisode extends Model
     {
         return [
             'air_date' => 'date',
+            'arrived_at' => 'datetime',
             'metadata' => 'array',
         ];
     }

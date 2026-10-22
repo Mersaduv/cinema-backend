@@ -413,6 +413,7 @@ class CatalogFilterQuery
                 : $query->orderByDesc('published_at')->orderByDesc('id'),
             'created', 'created_desc' => $query->orderByDesc('created_at')->orderByDesc('id'),
             'updated', 'updated_desc' => $query->orderByDesc('updated_at')->orderByDesc('published_at')->orderByDesc('id'),
+            'episode_arrived' => $this->applyEpisodeArrivedSort($query),
             default => $query->orderByDesc('published_at')->orderByDesc('id'),
         };
     }
@@ -512,11 +513,56 @@ class CatalogFilterQuery
             'created', 'created_desc' => $this->applyKeysetCursor($query, $table, 'created_at', $sortValue, $cursorId, 'desc', 'desc'),
             // Admin-style updated sort (admin list uses page pagination; this is for explicit sort=updated)
             'updated', 'updated_desc' => $this->applyKeysetCursor($query, $table, 'updated_at', $sortValue, $cursorId, 'desc', 'desc'),
+            'episode_arrived' => $this->applyEpisodeArrivedCursor($query, $sortValue, $cursorId),
             // Empty sort on public carousel is normalized to newest before cursor; keep published_at safe.
             '' => $this->applyKeysetCursor($query, $table, 'published_at', $sortValue, $cursorId, 'desc', 'desc'),
             // Trending uses multi-expression ORDER BY; id DESC tie-break remains stable enough for rails.
             default => $query->where($table.'.id', '<', $cursorId),
         };
+    }
+
+    /**
+     * Series with a playable episode, newest upload first.
+     *
+     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     */
+    private function applyEpisodeArrivedSort(Builder $query): Builder
+    {
+        $arrival = new EpisodeArrival();
+        $latest = $arrival->latestArrivedAtQuery();
+
+        return $query
+            ->whereExists(function ($sub) use ($arrival): void {
+                $sub->selectRaw('1')
+                    ->from('series_episodes as e')
+                    ->whereColumn('e.series_id', 'series.id')
+                    ->whereNotNull('e.'.$arrival->column());
+                $arrival->constrainPlayable($sub, 'e');
+            })
+            ->orderByRaw('('.$latest->toSql().') DESC', $latest->getBindings())
+            ->orderByDesc('series.id');
+    }
+
+    /**
+     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     */
+    private function applyEpisodeArrivedCursor(Builder $query, mixed $sortValue, int $cursorId): Builder
+    {
+        if ($sortValue === null || $sortValue === '') {
+            return $query->where('series.id', '<', $cursorId);
+        }
+
+        $latest = (new EpisodeArrival())->latestArrivedAtQuery();
+        $sql = '('.$latest->toSql().')';
+        $bindings = $latest->getBindings();
+
+        return $query->where(function (Builder $builder) use ($sql, $bindings, $sortValue, $cursorId): void {
+            $builder->whereRaw($sql.' < ?', [...$bindings, $sortValue])
+                ->orWhere(function (Builder $tie) use ($sql, $bindings, $sortValue, $cursorId): void {
+                    $tie->whereRaw($sql.' = ?', [...$bindings, $sortValue])
+                        ->where('series.id', '<', $cursorId);
+                });
+        });
     }
 
     /**

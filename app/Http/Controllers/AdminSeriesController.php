@@ -13,6 +13,7 @@ use App\Services\Cinema\CatalogAdminRankingEnricher;
 use App\Services\Cinema\CatalogContentRankingSyncService;
 use App\Services\Cinema\CatalogPopularityPersistence;
 use App\Services\Cinema\CatalogCacheService;
+use App\Services\Cinema\EpisodeArrival;
 use App\Services\Cinema\CatalogFilterQuery;
 use App\Services\Cinema\CatalogListProcedureService;
 use App\Services\Cinema\CountryCatalogService;
@@ -1417,6 +1418,8 @@ class AdminSeriesController extends Controller
         $existingEpisodes = $season->episodes->keyBy('episode_number');
         $upsertRows = [];
         $timestamp = now();
+        $storesArrivedAt = Schema::hasColumn('series_episodes', 'arrived_at');
+        $episodeArrival = new EpisodeArrival();
 
         $episodes->each(function (array $episodePayload, int $episodeIndex) use (
             $series,
@@ -1482,8 +1485,28 @@ class AdminSeriesController extends Controller
             $slug = $existingEpisode?->slug
                 ?: $this->episodeSlug($series->slug, $seasonNumber, $episodeNumber, $episodeTitle);
             $createdAt = $existingEpisode?->created_at ?? $timestamp;
+            $existingArrivedAt = $existingEpisode?->arrived_at;
+            $arrivedAt = $episodeArrival->resolve(
+                $existingArrivedAt instanceof \DateTimeInterface
+                    ? $existingArrivedAt->format('Y-m-d H:i:s')
+                    : (is_string($existingArrivedAt) ? $existingArrivedAt : null),
+                $existingEpisode instanceof SeriesEpisode && $episodeArrival->isPlayable(
+                    $existingEpisode->source_method,
+                    $existingEpisode->video_url,
+                    $existingEpisode->embed_url,
+                    $existingEpisode->hls_url,
+                ),
+                $episodeArrival->isPlayable(
+                    isset($episodePayload['source_method']) ? (string) $episodePayload['source_method'] : null,
+                    isset($episodePayload['video_url']) ? (string) $episodePayload['video_url'] : null,
+                    isset($episodePayload['embed_url']) ? (string) $episodePayload['embed_url'] : null,
+                    $episodeHlsUrl,
+                ),
+                $existingEpisode?->created_at?->format('Y-m-d H:i:s'),
+                $timestamp->format('Y-m-d H:i:s'),
+            );
 
-            $upsertRows[] = [
+            $upsertRow = [
                 'series_id' => $series->id,
                 'series_season_id' => $season->id,
                 'season_number' => $seasonNumber,
@@ -1508,6 +1531,12 @@ class AdminSeriesController extends Controller
                 'created_at' => $createdAt,
                 'updated_at' => $timestamp,
             ];
+
+            if ($storesArrivedAt) {
+                $upsertRow['arrived_at'] = $arrivedAt;
+            }
+
+            $upsertRows[] = $upsertRow;
         });
 
         if ($upsertRows === []) {
@@ -1537,6 +1566,7 @@ class AdminSeriesController extends Controller
                 'sort_order',
                 'metadata',
                 'updated_at',
+                ...($storesArrivedAt ? ['arrived_at'] : []),
             ],
         );
     }

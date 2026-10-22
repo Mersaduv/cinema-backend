@@ -271,7 +271,34 @@ class CatalogListResponseMapper
                 'genres' => CatalogListPresentation::posterGenreLine($genres),
                 'rating' => $rating,
             ],
+            ...$this->freshRankFields($row),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    private function freshRankFields(array $row): array
+    {
+        $fields = [];
+        $latestEpisode = $row['latest_episode'] ?? null;
+
+        if (is_array($latestEpisode)) {
+            $fields['latest_episode'] = $latestEpisode;
+        }
+
+        $rank = $row['fresh_rank_at'] ?? $row['episode_arrived_at'] ?? null;
+        if (($rank === null || $rank === '') && is_array($latestEpisode)) {
+            $rank = $latestEpisode['arrived_at'] ?? null;
+        }
+
+        $freshRankAt = $this->isoTimestamp($rank);
+        if ($freshRankAt !== null) {
+            $fields['fresh_rank_at'] = $freshRankAt;
+        }
+
+        return $fields;
     }
 
     /**

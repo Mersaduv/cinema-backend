@@ -69,7 +69,7 @@ class PublicContentCacheService
 
     public function homeCriticalKey(): string
     {
-        return 'home_critical_v6_g'.app(CatalogCacheService::class)->catalogGeneration();
+        return 'home_critical_v7_g'.app(CatalogCacheService::class)->catalogGeneration();
     }
 
     public function detailCacheHeaders(int $ttl): array

@@ -7,8 +7,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * One newest playable episode per published series, ordered by the series
- * publish time set in the admin panel. Home landscape rail, max 12.
+ * One newest uploaded playable episode per published series.
+ * Ordered by the episode arrival time, which stays fixed until a newer episode is uploaded.
  */
 class LatestCinemaEpisodesService
 {
@@ -24,10 +24,14 @@ class LatestCinemaEpisodesService
     {
         $limit = min(max($limit, 1), 20);
 
+        $arrival = new EpisodeArrival();
+        $arrivedColumn = 'e.'.$arrival->column();
+
         $ranked = DB::table('series_episodes as e')
             ->join('series as s', 's.id', '=', 'e.series_id')
             ->where('s.publish_status', 'published')
             ->whereNotNull('s.published_at')
+            ->whereNotNull($arrivedColumn)
             ->where(function ($visibility): void {
                 if (! Schema::hasColumn('series', 'catalog_visibility')) {
                     return;
@@ -35,30 +39,21 @@ class LatestCinemaEpisodesService
 
                 $visibility->whereIn('s.catalog_visibility', ['catalog_search', 'catalog'])
                     ->orWhereNull('s.catalog_visibility');
-            })
-            ->where(function ($playable): void {
-                $playable->where(function ($progressive): void {
-                    $progressive->whereIn('e.source_method', ['url', 'upload', 'video'])
-                        ->whereNotNull('e.video_url')
-                        ->where('e.video_url', '!=', '');
-                })->orWhere(function ($embed): void {
-                    $embed->where('e.source_method', 'embed')
-                        ->whereNotNull('e.embed_url')
-                        ->where('e.embed_url', '!=', '');
-                })->orWhere(function ($hls): void {
-                    $hls->whereNotNull('e.hls_url')
-                        ->where('e.hls_url', '!=', '');
-                });
-            })
-            ->select('e.id', 's.published_at')
+            });
+
+        $arrival->constrainPlayable($ranked, 'e');
+
+        $ranked
+            ->select('e.id')
+            ->selectRaw($arrivedColumn.' as arrived_at')
             ->selectRaw(
-                'ROW_NUMBER() OVER (PARTITION BY e.series_id ORDER BY e.season_number DESC, e.episode_number DESC, e.air_date DESC, e.id DESC) as episode_rank',
+                'ROW_NUMBER() OVER (PARTITION BY e.series_id ORDER BY '.$arrivedColumn.' DESC, e.id DESC) as episode_rank',
             );
 
         $ids = DB::query()
             ->fromSub($ranked, 'latest')
             ->where('latest.episode_rank', 1)
-            ->orderByDesc('latest.published_at')
+            ->orderByDesc('latest.arrived_at')
             ->orderByDesc('latest.id')
             ->limit($limit)
             ->pluck('latest.id');
