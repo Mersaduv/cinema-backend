@@ -16,6 +16,7 @@ use App\Http\Controllers\ContentViewController;
 use App\Http\Controllers\FilterOptionsController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\PersonController;
+use App\Http\Controllers\PublicContentRequestController;
 use App\Http\Controllers\PublicHomeController;
 use App\Http\Controllers\PublicTicketController;
 use App\Http\Controllers\PublicCollectionController;
