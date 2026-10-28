@@ -20,9 +20,11 @@ class SocialAuthController extends Controller
     public function handleGoogleCallback(Request $request)
     {
         try {
-            // Disable SSL verification in development (Windows SSL certificate issue)
+            // Windows PHP has no system CA store. Point cURL at the bundled
+            // Mozilla roots so the Google token request can verify TLS.
+            $caBundle = base_path('certs/cacert.pem');
             $httpClient = new \GuzzleHttp\Client([
-                'verify' => config('app.env') === 'production',
+                'verify' => is_file($caBundle) ? $caBundle : true,
             ]);
 
             $googleUser = Socialite::driver('google')
