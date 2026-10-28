@@ -23,7 +23,8 @@ class ContentRequestPresentationService
       'created_at' => $request->created_at?->toIso8601String(),
       'updated_at' => $request->updated_at?->toIso8601String(),
       'moderated_at' => $request->moderated_at?->toIso8601String(),
-      'is_own' => $viewer instanceof Viewer && (int) $request->viewer_id === (int) $viewer->id,
+      'is_own' => $viewer instanceof Viewer
+        && (int) $request->getAttribute(ContentRequest::ownerColumn()) === (int) $viewer->id,
     ];
   }
 

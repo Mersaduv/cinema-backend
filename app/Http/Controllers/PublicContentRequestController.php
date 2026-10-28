@@ -83,7 +83,7 @@ class PublicContentRequestController extends Controller
     }
 
     $contentRequest = ContentRequest::query()->create([
-      'viewer_id' => $viewer->id,
+      ContentRequest::ownerColumn() => $viewer->id,
       'title' => trim($validated['title']),
       'genre_slug' => $validated['genre_slug'],
       'genre_name' => $genreName,

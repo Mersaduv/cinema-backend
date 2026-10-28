@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\Schema;
 
 class ContentRequest extends Model
 {
@@ -18,6 +19,7 @@ class ContentRequest extends Model
 
     protected $fillable = [
         'viewer_id',
+        'user_id',
         'title',
         'genre_slug',
         'genre_name',
@@ -34,9 +36,19 @@ class ContentRequest extends Model
         ];
     }
 
+    /**
+     * Older databases still have user_id. Querying viewer_id there is a 500.
+     */
+    public static function ownerColumn(): string
+    {
+        return Schema::hasColumn((new static)->getTable(), 'viewer_id')
+            ? 'viewer_id'
+            : 'user_id';
+    }
+
     public function viewer(): BelongsTo
     {
-        return $this->belongsTo(Viewer::class);
+        return $this->belongsTo(Viewer::class, static::ownerColumn());
     }
 
     /** @deprecated Prefer viewer() — kept for transitional callers. */
@@ -47,6 +59,6 @@ class ContentRequest extends Model
 
     public function scopeForViewer(Builder $query, int $viewerId): Builder
     {
-        return $query->where('viewer_id', $viewerId);
+        return $query->where(static::ownerColumn(), $viewerId);
     }
 }

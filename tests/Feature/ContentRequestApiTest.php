@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\ContentRequest;
 use App\Models\Role;
 use App\Models\User;
+use App\Models\Viewer;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
@@ -27,8 +28,8 @@ class ContentRequestApiTest extends TestCase
 
     public function test_authenticated_user_can_submit_content_request(): void
     {
-        $user = User::factory()->create(['status' => 'active']);
-        Sanctum::actingAs($user);
+        $viewer = Viewer::factory()->create(['status' => 'active']);
+        Sanctum::actingAs($viewer);
 
         $response = $this->postJson('/api/requests', [
             'title' => 'Interstellar',
@@ -44,7 +45,7 @@ class ContentRequestApiTest extends TestCase
             ->assertJsonPath('data.request.status', ContentRequest::STATUS_PENDING);
 
         $this->assertDatabaseHas('content_requests', [
-            'user_id' => $user->id,
+            ContentRequest::ownerColumn() => $viewer->id,
             'title' => 'Interstellar',
             'genre_slug' => 'drama',
             'status' => ContentRequest::STATUS_PENDING,
@@ -53,11 +54,11 @@ class ContentRequestApiTest extends TestCase
 
     public function test_authenticated_user_can_list_own_requests(): void
     {
-        $user = User::factory()->create(['status' => 'active']);
-        $other = User::factory()->create(['status' => 'active']);
+        $viewer = Viewer::factory()->create(['status' => 'active']);
+        $other = Viewer::factory()->create(['status' => 'active']);
 
         ContentRequest::query()->create([
-            'user_id' => $user->id,
+            ContentRequest::ownerColumn() => $viewer->id,
             'title' => 'Mine',
             'genre_slug' => 'drama',
             'genre_name' => 'درام',
@@ -66,7 +67,7 @@ class ContentRequestApiTest extends TestCase
         ]);
 
         ContentRequest::query()->create([
-            'user_id' => $other->id,
+            ContentRequest::ownerColumn() => $other->id,
             'title' => 'Other',
             'genre_slug' => 'comedy',
             'genre_name' => 'کمدی',
@@ -74,7 +75,7 @@ class ContentRequestApiTest extends TestCase
             'status' => ContentRequest::STATUS_PENDING,
         ]);
 
-        Sanctum::actingAs($user);
+        Sanctum::actingAs($viewer);
 
         $this->getJson('/api/requests')
             ->assertOk()
@@ -91,7 +92,7 @@ class ContentRequestApiTest extends TestCase
         $admin->roles()->attach(Role::query()->where('slug', 'admin')->first());
 
         $request = ContentRequest::query()->create([
-            'user_id' => User::factory()->create()->id,
+            ContentRequest::ownerColumn() => Viewer::factory()->create()->id,
             'title' => 'Dark',
             'genre_slug' => 'mystery',
             'genre_name' => 'معمایی',
@@ -117,10 +118,10 @@ class ContentRequestApiTest extends TestCase
 
     public function test_user_can_filter_requests_by_status(): void
     {
-        $user = User::factory()->create(['status' => 'active']);
+        $viewer = Viewer::factory()->create(['status' => 'active']);
 
         ContentRequest::query()->create([
-            'user_id' => $user->id,
+            ContentRequest::ownerColumn() => $viewer->id,
             'title' => 'فیلم تست',
             'genre_slug' => 'drama',
             'genre_name' => 'درام',
@@ -129,7 +130,7 @@ class ContentRequestApiTest extends TestCase
         ]);
 
         ContentRequest::query()->create([
-            'user_id' => $user->id,
+            ContentRequest::ownerColumn() => $viewer->id,
             'title' => 'سریال تست',
             'genre_slug' => 'drama',
             'genre_name' => 'درام',
@@ -137,7 +138,7 @@ class ContentRequestApiTest extends TestCase
             'status' => ContentRequest::STATUS_FULFILLED,
         ]);
 
-        Sanctum::actingAs($user);
+        Sanctum::actingAs($viewer);
 
         $this->getJson('/api/requests?status=fulfilled')
             ->assertOk()
