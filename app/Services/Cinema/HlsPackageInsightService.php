@@ -570,48 +570,65 @@ class HlsPackageInsightService
         $requestPlan = [];
 
         foreach ($episodes as $epIndex => $ep) {
+            $key = sprintf('s%02de%02d', $ep['season'], $ep['episode']);
+
             foreach ($this->episodeHlsPathCandidates($baseUrl, $ep['season'], $ep['episode']) as $candidateIndex => $url) {
+                $local = $this->mediaPathService->resolveLocalContent2Path($url);
+
+                if ($local !== null && is_readable($local)) {
+                    $existing[$key] = [
+                        'exists' => true,
+                        'hls_url' => $url,
+                    ];
+                    break;
+                }
+
+                $outbound = $this->mediaPathService->outboundMediaRequest($url);
                 $requestPlan[] = [
-                    'key' => sprintf('s%02de%02d', $ep['season'], $ep['episode']),
+                    'key' => $key,
                     'pool_key' => "ep{$epIndex}c{$candidateIndex}",
                     'url' => $url,
+                    'fetch_url' => $outbound['url'],
+                    'headers' => $outbound['headers'],
                 ];
             }
         }
 
-        $responses = Http::pool(function ($pool) use ($requestPlan) {
+        if ($requestPlan !== []) {
+            $responses = Http::pool(function ($pool) use ($requestPlan) {
+                foreach ($requestPlan as $request) {
+                    $pool->as($request['pool_key'])
+                        ->connectTimeout(2)
+                        ->timeout(5)
+                        ->withOptions([
+                            'verify' => (bool) config('cinema.remote_media_ssl_verify', true),
+                            'allow_redirects' => ['max' => 3, 'protocols' => ['http', 'https']],
+                        ])
+                        ->withHeaders(array_merge([
+                            'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        ], $request['headers']))
+                        ->head($request['fetch_url']);
+                }
+            });
+
             foreach ($requestPlan as $request) {
-                $pool->as($request['pool_key'])
-                    ->connectTimeout(2)
-                    ->timeout(5)
-                    ->withOptions([
-                        'verify' => (bool) config('cinema.remote_media_ssl_verify', true),
-                        'allow_redirects' => ['max' => 3, 'protocols' => ['http', 'https']],
-                    ])
-                    ->withHeaders([
-                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    ])
-                    ->head($request['url']);
-            }
-        });
+                $key = $request['key'];
 
-        foreach ($requestPlan as $request) {
-            $key = $request['key'];
+                if (($existing[$key]['exists'] ?? false) === true) {
+                    continue;
+                }
 
-            if (($existing[$key]['exists'] ?? false) === true) {
-                continue;
-            }
+                $response = $responses[$request['pool_key']] ?? null;
 
-            $response = $responses[$request['pool_key']] ?? null;
-
-            if (
-                $response instanceof \Illuminate\Http\Client\Response
-                && $response->successful()
-            ) {
-                $existing[$key] = [
-                    'exists' => true,
-                    'hls_url' => $request['url'],
-                ];
+                if (
+                    $response instanceof \Illuminate\Http\Client\Response
+                    && $response->successful()
+                ) {
+                    $existing[$key] = [
+                        'exists' => true,
+                        'hls_url' => $request['url'],
+                    ];
+                }
             }
         }
 
