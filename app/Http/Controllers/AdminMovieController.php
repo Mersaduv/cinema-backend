@@ -1118,9 +1118,11 @@ class AdminMovieController extends Controller
         if (!filled($manifest) || stripos((string) $manifest, '#EXTM3U') === false) {
             return response()->json([
                 'success' => false,
-                'message' => 'The HLS master playlist could not be loaded.',
+                'message' => 'خواندن master.m3u8 از این مسیر انجام نشد. اگر آدرس cinema.af است، ریشهٔ محلی content2 را در سرور تنظیم کنید.',
                 'errors' => [
-                    'hls_url' => ['Could not read master.m3u8 from this URL or path.'],
+                    'hls_url' => [
+                        'Could not read master.m3u8. Set CINEMA_CONTENT2_STORAGE_ROOT on the API host if cinema.af is unreachable from itself.',
+                    ],
                 ],
             ], 422);
         }

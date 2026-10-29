@@ -121,6 +121,14 @@ class HlsPackageInsightService
                 ? $trimmed
                 : $this->mediaPathService->coerceRemoteMediaUrl($trimmed);
 
+            $local = $this->mediaPathService->resolveLocalContent2Path($remoteUrl);
+
+            if ($local !== null) {
+                return is_file($local);
+            }
+
+            $outbound = $this->mediaPathService->outboundMediaRequest($remoteUrl);
+
             try {
                 $response = Http::connectTimeout(2)
                     ->timeout(3)
@@ -128,10 +136,10 @@ class HlsPackageInsightService
                         'verify' => (bool) config('cinema.remote_media_ssl_verify', true),
                         'allow_redirects' => ['max' => 3, 'protocols' => ['http', 'https']],
                     ])
-                    ->withHeaders([
+                    ->withHeaders(array_merge([
                         'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    ])
-                    ->head($remoteUrl);
+                    ], $outbound['headers']))
+                    ->head($outbound['url']);
 
                 return $response->successful();
             } catch (\Throwable) {
@@ -373,35 +381,25 @@ class HlsPackageInsightService
             return null;
         }
 
-        if (preg_match('#^https?://#i', $masterPlaylistUrl) === 1) {
-            $base = rtrim(str_replace('\\', '/', $this->packageRootBaseUrl($masterPlaylistUrl)), '/');
-            $metaUrl = $base . '/metadata.json';
+        $base = rtrim(str_replace('\\', '/', $this->packageRootBaseUrl($masterPlaylistUrl)), '/');
+        $metaUrl = $base . '/metadata.json';
 
-            try {
-                $encoded = $this->encodeHttpUrlPathSegments($metaUrl);
-                $body = $this->httpGetRemote($encoded);
+        try {
+            $encoded = preg_match('#^https?://#i', $metaUrl) === 1
+                ? $this->encodeHttpUrlPathSegments($metaUrl)
+                : $metaUrl;
+            $body = $this->readMediaText($encoded);
 
-                if ($body === null) {
-                    return null;
-                }
-
-                $decoded = json_decode($body, true);
-
-                return is_array($decoded) ? $decoded : null;
-            } catch (\Throwable) {
+            if ($body === null) {
                 return null;
             }
-        }
 
-        $path = dirname($masterPlaylistUrl) . DIRECTORY_SEPARATOR . 'metadata.json';
+            $decoded = json_decode($body, true);
 
-        if (!is_readable($path)) {
+            return is_array($decoded) ? $decoded : null;
+        } catch (\Throwable) {
             return null;
         }
-
-        $decoded = json_decode((string) file_get_contents($path), true);
-
-        return is_array($decoded) ? $decoded : null;
     }
 
     private function packageRootBaseUrl(string $masterPlaylistUrl): string
@@ -881,6 +879,16 @@ class HlsPackageInsightService
             ];
         }
 
+        $localManifest = $this->loadHlsContent($canonical);
+
+        if (filled($localManifest) && stripos((string) $localManifest, '#EXTM3U') !== false) {
+            return [
+                'ok' => true,
+                'status' => 200,
+                'error' => null,
+            ];
+        }
+
         $candidates = [$canonical];
 
         if (preg_match('#^http://#i', $canonical) === 1) {
@@ -891,9 +899,11 @@ class HlsPackageInsightService
 
         foreach ($candidates as $candidate) {
             $url = $this->encodeHttpUrlPathSegments($candidate);
+            $outbound = $this->mediaPathService->outboundMediaRequest($url);
 
             try {
-                $response = Http::timeout(3)
+                $response = Http::connectTimeout(2)
+                    ->timeout(3)
                     ->withOptions([
                         'verify' => (bool) config('cinema.remote_media_ssl_verify', true),
                         'allow_redirects' => [
@@ -903,11 +913,11 @@ class HlsPackageInsightService
                             'protocols' => ['http', 'https'],
                         ],
                     ])
-                    ->withHeaders([
+                    ->withHeaders(array_merge([
                         'User-Agent' => 'Mozilla/5.0 (compatible; CinemaAdmin/1.0)',
                         'Accept' => '*/*',
-                    ])
-                    ->head($url);
+                    ], $outbound['headers']))
+                    ->head($outbound['url']);
 
                 if (in_array($response->status(), [200, 206], true)) {
                     return [
@@ -918,15 +928,16 @@ class HlsPackageInsightService
                 }
 
                 if (in_array($response->status(), [405, 501], true)) {
-                    $getResponse = Http::timeout(3)
+                    $getResponse = Http::connectTimeout(2)
+                        ->timeout(3)
                         ->withOptions([
                             'verify' => (bool) config('cinema.remote_media_ssl_verify', true),
                         ])
-                        ->withHeaders([
+                        ->withHeaders(array_merge([
                             'User-Agent' => 'Mozilla/5.0 (compatible; CinemaAdmin/1.0)',
                             'Accept' => '*/*',
-                        ])
-                        ->get($url);
+                        ], $outbound['headers']))
+                        ->get($outbound['url']);
 
                     if ($getResponse->successful() && stripos($getResponse->body(), '#EXTM3U') !== false) {
                         return [
@@ -963,11 +974,24 @@ class HlsPackageInsightService
 
         $trimmed = $this->mediaPathService->coerceRemoteMediaUrl($trimmed);
 
-        if (preg_match('#^https?://#i', $trimmed) === 1) {
-            return $this->httpGetRemote($trimmed);
+        return $this->readMediaText($trimmed);
+    }
+
+    /**
+     * Fetch remote text (m3u8, json). Prefer local content2 when configured —
+     * the API host cannot open cinema.af:80 to itself.
+     */
+    private function readMediaText(string $url): ?string
+    {
+        $local = $this->mediaPathService->resolveLocalContent2Path($url);
+
+        if ($local !== null && is_readable($local)) {
+            $body = @file_get_contents($local);
+
+            return $body === false ? null : $body;
         }
 
-        return null;
+        return $this->httpGetRemote($url);
     }
 
     /**
@@ -984,8 +1008,11 @@ class HlsPackageInsightService
         $attempts = array_values(array_unique(array_filter($attempts)));
 
         foreach ($attempts as $candidate) {
+            $outbound = $this->mediaPathService->outboundMediaRequest((string) $candidate);
+
             try {
-                $response = Http::timeout(25)
+                $response = Http::connectTimeout(3)
+                    ->timeout(10)
                     ->withOptions([
                         'verify' => (bool) config('cinema.remote_media_ssl_verify', true),
                         'allow_redirects' => [
@@ -995,12 +1022,12 @@ class HlsPackageInsightService
                             'protocols' => ['http', 'https'],
                         ],
                     ])
-                    ->withHeaders([
+                    ->withHeaders(array_merge([
                         'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                         'Accept' => '*/*',
                         'Accept-Language' => 'en-US,en;q=0.9',
-                    ])
-                    ->get($candidate);
+                    ], $outbound['headers']))
+                    ->get($outbound['url']);
 
                 if ($response->successful()) {
                     return $response->body();
@@ -1465,6 +1492,12 @@ class HlsPackageInsightService
 
     private function downloadTargetExists(string $pathOrUrl): bool
     {
+        $local = $this->mediaPathService->resolveLocalContent2Path($pathOrUrl);
+
+        if ($local !== null) {
+            return is_file($local);
+        }
+
         if (preg_match('#^https?://#i', $pathOrUrl) === 1) {
             if (!$this->verifyRemoteDownloadTargets) {
                 return true;
@@ -1492,6 +1525,7 @@ class HlsPackageInsightService
 
         foreach ($attempts as $candidate) {
             $encoded = $this->encodeHttpUrlPathSegments($candidate);
+            $outbound = $this->mediaPathService->outboundMediaRequest($encoded);
 
             try {
                 $head = Http::connectTimeout(2)
@@ -1505,12 +1539,12 @@ class HlsPackageInsightService
                             'protocols' => ['http', 'https'],
                         ],
                     ])
-                    ->withHeaders([
+                    ->withHeaders(array_merge([
                         'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                         'Accept' => '*/*',
                         'Accept-Language' => 'en-US,en;q=0.9',
-                    ])
-                    ->head($encoded);
+                    ], $outbound['headers']))
+                    ->head($outbound['url']);
 
                 if ($head->successful() && $this->remoteResponseLooksLikeMediaFile($head->header('Content-Type'), $head->header('Content-Length'))) {
                     return true;
@@ -1528,12 +1562,12 @@ class HlsPackageInsightService
                                 'protocols' => ['http', 'https'],
                             ],
                         ])
-                        ->withHeaders([
+                        ->withHeaders(array_merge([
                             'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                             'Accept' => '*/*',
                             'Range' => 'bytes=0-0',
-                        ])
-                        ->get($encoded);
+                        ], $outbound['headers']))
+                        ->get($outbound['url']);
 
                     if (
                         ($get->successful() || $get->status() === 206)

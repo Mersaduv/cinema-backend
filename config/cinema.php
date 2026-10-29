@@ -7,6 +7,20 @@ return [
      */
     'remote_media_ssl_verify' => env('CINEMA_REMOTE_MEDIA_SSL_VERIFY', true),
     /**
+     * Local folder that IIS serves as /content2. Lets the API read HLS packages
+     * without hairpinning to the public cinema.af hostname.
+     */
+    'content2_storage_root' => env('CINEMA_CONTENT2_STORAGE_ROOT', ''),
+    /**
+     * Optional internal origin for outbound media GETs (e.g. http://127.0.0.1:8080).
+     * Hosts listed in remote_media_fetch_hosts are rewritten to this base.
+     */
+    'remote_media_fetch_base_url' => env('CINEMA_REMOTE_MEDIA_FETCH_BASE_URL', ''),
+    'remote_media_fetch_hosts' => array_values(array_filter(array_map(
+        'trim',
+        explode(',', (string) env('CINEMA_REMOTE_MEDIA_FETCH_HOSTS', 'cinema.af,www.cinema.af')),
+    ))),
+    /**
      * Progressive (MP4/MKV) files for admin "download links" live under this folder relative to each HLS package root.
      * Example: video/sources/1080/Filename.mkv
      */

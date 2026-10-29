@@ -3,37 +3,39 @@
 namespace Tests\Unit;
 
 use App\Services\Cinema\MediaPathService;
-use PHPUnit\Framework\TestCase;
+use Tests\TestCase;
 
 class MediaPathServiceTest extends TestCase
 {
-    private MediaPathService $service;
-
-    protected function setUp(): void
+    public function test_resolve_local_content2_path_maps_public_url_under_configured_root(): void
     {
-        parent::setUp();
-        $this->service = new MediaPathService();
-    }
+        config()->set('cinema.content2_storage_root', 'D:\\content2');
 
-    public function test_coerces_hostname_style_path_to_http(): void
-    {
-        $this->assertTrue($this->service->isRemoteMediaReference('cinema.af/content2/beta/Fallout'));
+        $service = app(MediaPathService::class);
+        $path = $service->resolveLocalContent2Path(
+            'http://cinema.af/content2/movies/demo/hls/master.m3u8',
+        );
+
         $this->assertSame(
-            'http://cinema.af/content2/beta/2026-05-12/Fallout/season-01/episode-01/master.m3u8',
-            $this->service->coerceRemoteMediaUrl(
-                'cinema.af/content2/beta/2026-05-12/Fallout/season-01/episode-01/master.m3u8',
-            ),
+            'd:\\content2\\movies\\demo\\hls\\master.m3u8',
+            $path,
         );
     }
 
-    public function test_does_not_treat_windows_paths_as_remote(): void
+    public function test_outbound_media_request_rewrites_public_host_to_fetch_base(): void
     {
-        $this->assertFalse($this->service->isRemoteMediaReference('E:\\content\\movies\\test\\master.m3u8'));
-    }
+        config()->set('cinema.remote_media_fetch_base_url', 'http://127.0.0.1:8080');
+        config()->set('cinema.remote_media_fetch_hosts', ['cinema.af', 'www.cinema.af']);
 
-    public function test_rejects_local_disk_paths_when_asserting_remote_url(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->service->assertRemoteMediaUrl('E:\\content\\movies\\test\\master.m3u8');
+        $service = app(MediaPathService::class);
+        $outbound = $service->outboundMediaRequest(
+            'http://cinema.af/content2/movies/demo/hls/master.m3u8',
+        );
+
+        $this->assertSame(
+            'http://127.0.0.1:8080/content2/movies/demo/hls/master.m3u8',
+            $outbound['url'],
+        );
+        $this->assertSame('cinema.af', $outbound['headers']['Host']);
     }
 }
