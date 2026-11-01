@@ -100,16 +100,21 @@ class MediaPathService
     }
 
     /**
-     * Map a public /content2/... URL onto the local package tree when configured.
+     * Map public /content2/... or /content/... URLs onto the local package trees.
+     * /content2 is checked before /content because it shares the same prefix.
      */
     public function resolveLocalContent2Path(string $url): ?string
     {
-        $root = trim((string) config('cinema.content2_storage_root', ''));
+        return $this->resolveLocalPublicMediaPath($url);
+    }
 
-        if ($root === '') {
-            return null;
-        }
-
+    /**
+     * IIS on this host:
+     *   /content2 -> E:\content
+     *   /content  -> D:\content
+     */
+    public function resolveLocalPublicMediaPath(string $url): ?string
+    {
         $coerced = $this->coerceRemoteMediaUrl($url);
         $path = parse_url($coerced, PHP_URL_PATH);
 
@@ -119,21 +124,34 @@ class MediaPathService
 
         $path = rawurldecode($path);
 
-        if (! str_starts_with($path, '/content2/') && $path !== '/content2') {
-            return null;
+        $mappings = [
+            '/content2' => trim((string) config('cinema.content2_storage_root', '')),
+            '/content' => trim((string) config('cinema.content_storage_root', '')),
+        ];
+
+        foreach ($mappings as $prefix => $root) {
+            if ($root === '') {
+                continue;
+            }
+
+            if ($path !== $prefix && ! str_starts_with($path, $prefix.'/')) {
+                continue;
+            }
+
+            $relative = ltrim(substr($path, strlen($prefix)), '/');
+            $relative = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $relative);
+            $absolute = rtrim($root, "\\/") . ($relative !== '' ? DIRECTORY_SEPARATOR . $relative : '');
+            $normalizedRoot = $this->normalizeAbsolutePath($root);
+            $normalizedAbsolute = $this->normalizeAbsolutePath($absolute);
+
+            if (! str_starts_with($normalizedAbsolute, $normalizedRoot)) {
+                return null;
+            }
+
+            return $normalizedAbsolute;
         }
 
-        $relative = ltrim(substr($path, strlen('/content2')), '/');
-        $relative = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $relative);
-        $absolute = rtrim($root, "\\/") . DIRECTORY_SEPARATOR . $relative;
-        $normalizedRoot = $this->normalizeAbsolutePath($root);
-        $normalizedAbsolute = $this->normalizeAbsolutePath($absolute);
-
-        if (! str_starts_with($normalizedAbsolute, $normalizedRoot)) {
-            return null;
-        }
-
-        return $normalizedAbsolute;
+        return null;
     }
 
     /**

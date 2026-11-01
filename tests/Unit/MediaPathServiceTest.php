@@ -38,4 +38,26 @@ class MediaPathServiceTest extends TestCase
         );
         $this->assertSame('cinema.af', $outbound['headers']['Host']);
     }
+
+    public function test_resolve_local_content_path_maps_content_prefix_to_d_root(): void
+    {
+        config()->set('cinema.content2_storage_root', 'E:\\content');
+        config()->set('cinema.content_storage_root', 'D:\\content');
+
+        $service = app(MediaPathService::class);
+
+        $this->assertSame(
+            'd:\\content\\movies-2026-hls\\2026-11-01\\demo\\master.m3u8',
+            $service->resolveLocalContent2Path(
+                'http://cinema.af/content/movies-2026-HLS/2026-11-01/demo/master.m3u8',
+            ),
+        );
+
+        $this->assertSame(
+            'e:\\content\\movies2\\2026-10-18\\demo\\master.m3u8',
+            $service->resolveLocalContent2Path(
+                'http://cinema.af/content2/movies2/2026-10-18/demo/master.m3u8',
+            ),
+        );
+    }
 }
