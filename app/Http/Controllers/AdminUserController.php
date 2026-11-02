@@ -183,6 +183,214 @@ class AdminUserController extends Controller
         ], 201);
     }
 
+    public function show(User $user): JsonResponse
+    {
+        if (! $this->isStaffPanelUser($user)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $user->load([
+            'roles' => function ($query) {
+                $query->select('roles.id', 'roles.name', 'roles.slug', 'roles.description')
+                    ->with('permissions:id,name,slug,description');
+            },
+            'permissions:id,name,slug,description',
+        ]);
+
+        if ($user->permissions->isEmpty()) {
+            $rolePermissions = $user->roles
+                ->flatMap(fn (Role $role) => $role->permissions)
+                ->unique('id')
+                ->values();
+            $user->setRelation('permissions', $rolePermissions);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'user' => $this->transformUser($user),
+            ],
+        ]);
+    }
+
+    public function update(Request $request, User $user): JsonResponse
+    {
+        if (! $this->isStaffPanelUser($user)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $allPermissionSlugs = Permission::query()->pluck('slug')->all();
+
+        $validator = Validator::make($request->all(), [
+            'name' => ['required', 'string', 'max:255'],
+            'email' => [
+                'required',
+                'string',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->ignore($user->id),
+                Rule::unique('viewers', 'email'),
+            ],
+            'password' => ['nullable', 'string', 'min:8', 'confirmed'],
+            'role_slug' => ['required', 'string', Rule::in($this->allowedRoleSlugs)],
+            'permission_slugs' => ['nullable', 'array'],
+            'permission_slugs.*' => ['string', Rule::in($allPermissionSlugs)],
+            'status' => ['required', Rule::in(['active', 'banned'])],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $roleSlug = (string) $request->string('role_slug');
+        $role = Role::query()
+            ->where('slug', $roleSlug)
+            ->with('permissions:id,slug')
+            ->first();
+
+        if (! $role) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Selected role is not available.',
+            ], 422);
+        }
+
+        $actor = $request->user();
+        $isSelf = $actor instanceof User && (int) $actor->id === (int) $user->id;
+
+        if ($isSelf && (string) $request->string('status') === 'banned') {
+            return response()->json([
+                'success' => false,
+                'message' => 'نمی‌توانید حساب خودتان را مسدود کنید.',
+            ], 422);
+        }
+
+        if (
+            $isSelf
+            && $user->hasRole('admin')
+            && $roleSlug !== 'admin'
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'نمی‌توانید نقش ادمین خودتان را تغییر دهید.',
+            ], 422);
+        }
+
+        if (
+            $user->hasRole('admin')
+            && $roleSlug !== 'admin'
+            && $this->countUsersByRole('admin') <= 1
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'حداقل یک مدیر پنل باید باقی بماند.',
+            ], 422);
+        }
+
+        $permissionSlugs = $request->input('permission_slugs');
+        if (! is_array($permissionSlugs) || count($permissionSlugs) === 0) {
+            $permissionSlugs = $role->permissions->pluck('slug')->all();
+        }
+
+        $permissionIds = Permission::query()
+            ->whereIn('slug', $permissionSlugs)
+            ->pluck('id')
+            ->values()
+            ->all();
+
+        $updated = DB::transaction(function () use ($request, $user, $role, $permissionIds) {
+            $payload = [
+                'name' => (string) $request->string('name'),
+                'email' => (string) $request->string('email'),
+                'status' => (string) $request->string('status'),
+            ];
+
+            $password = $request->input('password');
+            if (is_string($password) && $password !== '') {
+                $payload['password'] = $password;
+            }
+
+            $user->fill($payload);
+            $user->save();
+
+            $user->roles()->sync([$role->id]);
+            $user->permissions()->sync($permissionIds);
+
+            if (is_string($password) && $password !== '') {
+                $user->tokens()->delete();
+            }
+
+            return $user->load([
+                'roles' => function ($query) {
+                    $query->select('roles.id', 'roles.name', 'roles.slug', 'roles.description');
+                },
+                'permissions:id,name,slug,description',
+            ]);
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'User updated successfully.',
+            'data' => [
+                'user' => $this->transformUser($updated),
+            ],
+        ]);
+    }
+
+    public function destroy(Request $request, User $user): JsonResponse
+    {
+        if (! $this->isStaffPanelUser($user)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $actor = $request->user();
+        if ($actor instanceof User && (int) $actor->id === (int) $user->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'نمی‌توانید حساب خودتان را حذف کنید.',
+            ], 422);
+        }
+
+        if ($user->hasRole('admin') && $this->countUsersByRole('admin') <= 1) {
+            return response()->json([
+                'success' => false,
+                'message' => 'حداقل یک مدیر پنل باید باقی بماند.',
+            ], 422);
+        }
+
+        DB::transaction(function () use ($user) {
+            $user->tokens()->delete();
+            $user->roles()->detach();
+            $user->permissions()->detach();
+            $user->delete();
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'User deleted successfully.',
+        ]);
+    }
+
+    private function isStaffPanelUser(User $user): bool
+    {
+        return $user->roles()
+            ->whereIn('slug', $this->allowedRoleSlugs)
+            ->exists();
+    }
+
     private function countUsersByRole(string $roleSlug): int
     {
         return User::whereHas('roles', function ($query) use ($roleSlug) {

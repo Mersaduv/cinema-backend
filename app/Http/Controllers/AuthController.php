@@ -257,6 +257,112 @@ class AuthController extends Controller
         ], 401);
     }
 
+    public function updateProfile(Request $request)
+    {
+        $actor = $request->user();
+
+        if (! $actor instanceof User) {
+            return response()->json([
+                'success' => false,
+                'message' => 'این عملیات فقط برای کاربران پنل است.',
+            ], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'name' => ['required', 'string', 'max:255'],
+            'email' => [
+                'required',
+                'string',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->ignore($actor->id),
+                Rule::unique('viewers', 'email'),
+            ],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $actor->fill([
+            'name' => (string) $request->string('name'),
+            'email' => (string) $request->string('email'),
+        ]);
+        $actor->save();
+        $actor->load(['roles.permissions', 'permissions']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'پروفایل با موفقیت به‌روزرسانی شد.',
+            'data' => [
+                'user' => $this->transformStaff($actor),
+            ],
+        ]);
+    }
+
+    public function changePassword(Request $request)
+    {
+        $actor = $request->user();
+
+        if (! $actor instanceof User) {
+            return response()->json([
+                'success' => false,
+                'message' => 'این عملیات فقط برای کاربران پنل است.',
+            ], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'current_password' => ['required', 'string'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        if (! Hash::check((string) $request->string('current_password'), $actor->password)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'رمز فعلی نادرست است.',
+                'errors' => [
+                    'current_password' => ['رمز فعلی نادرست است.'],
+                ],
+            ], 422);
+        }
+
+        $actor->password = (string) $request->string('password');
+        $actor->save();
+
+        $currentToken = $actor->currentAccessToken();
+        $currentTokenId = is_object($currentToken) && isset($currentToken->id)
+            ? $currentToken->id
+            : null;
+
+        $actor->tokens()
+            ->when($currentTokenId, function ($query) use ($currentTokenId) {
+                $query->where('id', '!=', $currentTokenId);
+            })
+            ->delete();
+
+        $actor->load(['roles.permissions', 'permissions']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'رمز عبور با موفقیت تغییر کرد.',
+            'data' => [
+                'user' => $this->transformStaff($actor),
+            ],
+        ]);
+    }
+
     /**
      * @return array<string, mixed>
      */

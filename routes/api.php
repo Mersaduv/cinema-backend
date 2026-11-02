@@ -105,6 +105,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
 });
 
+// Staff profile (panel users only)
+Route::middleware(['auth:sanctum', 'staff'])->group(function () {
+    Route::match(['put', 'patch'], '/me/profile', [AuthController::class, 'updateProfile']);
+    Route::post('/me/password', [AuthController::class, 'changePassword']);
+});
+
 // Viewer-only audience features
 Route::middleware(['auth:sanctum', 'viewer'])->group(function () {
     Route::post('/complete-profile', [\App\Http\Controllers\SocialAuthController::class, 'completeProfile']);
@@ -139,9 +145,12 @@ Route::middleware(['auth:sanctum', 'viewer'])->group(function () {
 Route::middleware(['auth:sanctum', 'staff', 'role:admin,media,support'])->prefix('admin')->group(function () {
     Route::middleware('permission:view_dashboard')->get('/dashboard/summary', [AdminDashboardController::class, 'summary']);
 
-    Route::middleware('permission:view_users,create_users')->get('/users', [AdminUserController::class, 'index']);
-    Route::middleware('permission:create_users')->get('/users/options', [AdminUserController::class, 'options']);
+    Route::middleware('permission:view_users,create_users,edit_users')->get('/users', [AdminUserController::class, 'index']);
+    Route::middleware('permission:create_users,edit_users')->get('/users/options', [AdminUserController::class, 'options']);
     Route::middleware('permission:create_users')->post('/users', [AdminUserController::class, 'store']);
+    Route::middleware('permission:view_users,edit_users')->get('/users/{user}', [AdminUserController::class, 'show']);
+    Route::middleware('permission:edit_users')->match(['put', 'patch'], '/users/{user}', [AdminUserController::class, 'update']);
+    Route::middleware('permission:delete_users')->delete('/users/{user}', [AdminUserController::class, 'destroy']);
 
     Route::middleware('permission:view_viewers,create_viewers,manage_viewers')->get('/viewers', [AdminViewerController::class, 'index']);
     Route::middleware('permission:create_viewers')->post('/viewers', [AdminViewerController::class, 'store']);

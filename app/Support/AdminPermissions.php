@@ -74,6 +74,8 @@ class AdminPermissions
                 'permissions' => [
                     self::perm('view_users', 'مشاهده کاربران', 'فهرست کاربران پنل'),
                     self::perm('create_users', 'ایجاد کاربر', 'ساخت کاربر پنل با نقش و دسترسی'),
+                    self::perm('edit_users', 'ویرایش کاربر', 'ویرایش نقش، دسترسی و وضعیت کاربر پنل'),
+                    self::perm('delete_users', 'حذف کاربر', 'حذف حساب کاربر پنل'),
                 ],
             ],
             [
